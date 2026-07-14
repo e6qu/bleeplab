@@ -1,0 +1,7 @@
+.git
+dist
+web/dist
+web/node_modules
+web/core/dist
+web/core/node_modules
+bleeplab-server
