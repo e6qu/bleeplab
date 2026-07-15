@@ -1,4 +1,4 @@
-.PHONY: build test web-build runner-sockerless-test
+.PHONY: build test web-build runner-sockerless-test runner-image
 
 build: web-build
 	CGO_ENABLED=0 go build -o bleeplab-server ./cmd
@@ -18,3 +18,6 @@ runner-sockerless-test:
 	rm -rf /tmp/bleeplab-runner-sockerless-data
 	mkdir -p /tmp/bleeplab-runner-sockerless-data
 	docker run --rm --security-opt label=disable -v /var/run/docker.sock:/var/run/docker.sock -v /tmp/bleeplab-runner-sockerless-data:/tmp/bleeplab-runner-sockerless-data -e SOCKERLESS_HARNESS_DATA_DIR=/tmp/bleeplab-runner-sockerless-data -e BLEEPLAB_BACKEND=ecs -p 8929:8929 -p 3375:3375 -p 5000:4566 bleeplab-runner-sockerless:local
+
+runner-image:
+	docker buildx build --load -f Dockerfile.runner -t bleeplab-runner:local .

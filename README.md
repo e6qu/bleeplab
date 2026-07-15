@@ -76,6 +76,29 @@ make build                   # → ./bleeplab-server
 
 Nothing is required in the environment for the in-memory default — a runner can register and run jobs immediately. Point `BLEEPLAB_S3_*` or `BLEEPLAB_GIT_DIR` at durable storage to keep repos and artifacts across restarts.
 
+## Container images
+
+Every merge to `main` publishes immutable twelve-character commit-SHA tags to GitHub Container Registry. Each generic tag is a multi-architecture manifest; its direct native manifests are suffixed with `-amd64` and `-arm64`. Select the generic manifest for an architecture-aware orchestrator such as Kubernetes, or select a suffixed manifest when a service requires an explicit platform image.
+
+| Image | Multi-architecture manifest | Direct native manifests |
+|---|---|---|
+| Server | `ghcr.io/e6qu/bleeplab:<tag>` | `ghcr.io/e6qu/bleeplab:<tag>-amd64`, `ghcr.io/e6qu/bleeplab:<tag>-arm64` |
+| GitLab Runner | `ghcr.io/e6qu/bleeplab-runner:<tag>` | `ghcr.io/e6qu/bleeplab-runner:<tag>-amd64`, `ghcr.io/e6qu/bleeplab-runner:<tag>-arm64` |
+
+The runner image packages the official GitLab Runner. Mount an existing `config.toml`, or have it register itself from a real Bleeplab runner URL and token:
+
+```bash
+docker run --rm \
+  -e RUNNER_URL=https://bleeplab.example \
+  -e RUNNER_TOKEN=<runner-token> \
+  -e RUNNER_EXECUTOR=docker \
+  -e RUNNER_DOCKER_IMAGE=alpine:3.20 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  ghcr.io/e6qu/bleeplab-runner:<tag>
+```
+
+`RUNNER_NAME` and `RUNNER_DOCKER_HOST` optionally refine registration. The newest 20 releases of each package are retained; no mutable `latest` or `main` tag is published.
+
 ### bleeplab UI
 
 The dashboard is a Vite SPA embedded via Go `embed` (`ui_embed.go`; `-tags noui` drops it, `ui_noembed.go`). For live UI development, run the Go server headless and the Vite dev server against it:
