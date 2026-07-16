@@ -28,6 +28,26 @@ bleeplab is the **control plane**; the sockerless backend + cloud simulator are 
 
 The `externalURL` coordinate (`BLEEPLAB_EXTERNAL_URL`) matters here: the `git_info.repo_url` handed to a job must be reachable **from the job/helper container**, which is a different network vantage point than the runner process — so it is a distinct coordinate from the control-plane API URL. The [Sockerless runner guide](https://github.com/e6qu/sockerless/blob/main/docs/RUNNERS.md) covers the transport and cloud-runtime constraints.
 
+## Shauth browser sign-in
+
+The GitLab-compatible runner API, project API, and Git smart-HTTP transports
+continue to use their GitLab tokens and remain wire-compatible. For the human
+dashboard and its `/internal/` operator projections, Bleeplab can additionally
+use Shauth OpenID Connect. Configure all four values together:
+
+```text
+BLEEPLAB_SHAUTH_ISSUER=https://auth.dev.e6qu.dev/realms/dev
+BLEEPLAB_SHAUTH_CLIENT_ID=...
+BLEEPLAB_SHAUTH_CLIENT_SECRET=...
+BLEEPLAB_PUBLIC_URL=https://bleeplab.dev.e6qu.dev
+```
+
+Register `https://bleeplab.dev.e6qu.dev/auth/shauth/callback` as the Shauth
+client redirect URI. Bleeplab uses discovery, authorization code + PKCE, nonce
+and state checks, signed short-lived transaction/session cookies, and accepts
+only Shauth `developer` or `admin` roles. An omitted configuration preserves the
+standalone simulator mode; a partial or non-HTTPS configuration fails startup.
+
 ## What it implements
 
 All under one binary on one port (`:8929` by default).

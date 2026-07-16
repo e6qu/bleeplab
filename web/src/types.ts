@@ -11,6 +11,12 @@ export interface Status {
   uptime_seconds: number;
 }
 
+export interface Session {
+  authenticated: boolean;
+  name?: string;
+  role?: string;
+}
+
 export interface Project {
   id: number;
   name: string;

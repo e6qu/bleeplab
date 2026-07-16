@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { Link, useLocation } from "react-router";
 import { ThemeToggle } from "@bleeplab/ui-core/components";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "../api.js";
 
 const nav = [
   { label: "Overview", to: "/ui/" },
@@ -32,6 +34,7 @@ function TanukiMark() {
 
 export function BleeplabShell({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
+	const session = useQuery({ queryKey: ["session"], queryFn: api.session });
   return (
     <div
       className="grid h-screen w-full"
@@ -83,11 +86,21 @@ export function BleeplabShell({ children }: { children: ReactNode }) {
           })}
         </nav>
 
-        <div className="mt-auto flex items-center justify-between px-1 pt-4">
+        <div className="mt-auto space-y-3 px-1 pt-4">
+          {session.data?.authenticated ? (
+            <div className="flex items-center justify-between gap-2 text-xs" aria-label="Signed-in user">
+              <span className="min-w-0 truncate font-medium">{session.data.name || "Shauth user"}</span>
+              <form action="/auth/logout" method="post">
+                <button className="rounded px-2 py-1 text-xs" style={{ border: "1px solid var(--color-border)", color: "var(--color-fg)" }} type="submit">Log out</button>
+              </form>
+            </div>
+          ) : null}
+          <div className="flex items-center justify-between">
           <span className="text-[10px]" style={{ color: "var(--color-fg-subtle)" }}>
             sockerless sim
           </span>
           <ThemeToggle />
+          </div>
         </div>
       </aside>
 

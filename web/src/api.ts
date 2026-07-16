@@ -9,6 +9,7 @@ import type {
   Job,
   Runner,
   Storage,
+  Session,
 } from "./types.js";
 
 async function getJSON<T>(path: string): Promise<T> {
@@ -20,6 +21,7 @@ async function getJSON<T>(path: string): Promise<T> {
 }
 
 export const api = {
+	  session: () => getJSON<Session>("/internal/session"),
   status: () => getJSON<Status>("/internal/status"),
   projects: () => getJSON<Project[]>("/internal/projects"),
   pipelines: () => getJSON<Pipeline[]>("/internal/pipelines"),

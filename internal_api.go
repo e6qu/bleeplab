@@ -25,6 +25,30 @@ type statusView struct {
 	UptimeSeconds     int            `json:"uptime_seconds"`
 }
 
+type sessionView struct {
+	Authenticated bool   `json:"authenticated"`
+	Name          string `json:"name,omitempty"`
+	Role          string `json:"role,omitempty"`
+}
+
+func (s *Server) handleInternalSession(w http.ResponseWriter, r *http.Request) {
+	if !s.shauth.enabled() {
+		writeJSON(w, http.StatusOK, sessionView{Authenticated: false})
+		return
+	}
+	cookie, err := r.Cookie(shauthSessionCookie)
+	if err != nil {
+		http.Error(w, "Shauth session is missing", http.StatusUnauthorized)
+		return
+	}
+	var session shauthSession
+	if s.shauth.verify(cookie.Value, &session) != nil || session.Expires <= time.Now().Unix() {
+		http.Error(w, "Shauth session is invalid", http.StatusUnauthorized)
+		return
+	}
+	writeJSON(w, http.StatusOK, sessionView{Authenticated: true, Name: session.Name, Role: session.Role})
+}
+
 type projectView struct {
 	ID            int    `json:"id"`
 	Name          string `json:"name"`
