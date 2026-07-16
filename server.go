@@ -17,6 +17,7 @@ package bleeplab
 import (
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,7 @@ type Server struct {
 	// process — hence a distinct coordinate from the control-plane API URL.
 	// Set via BLEEPLAB_EXTERNAL_URL; empty falls back to the request Host.
 	externalURL string
+	shauth      shauthConfig
 	// started is the process start time, surfaced as uptime on /internal/status.
 	started time.Time
 
@@ -66,6 +68,7 @@ func NewServer(addr string, logger zerolog.Logger) *Server {
 		logger:      logger,
 		mux:         http.NewServeMux(),
 		externalURL: os.Getenv("BLEEPLAB_EXTERNAL_URL"),
+		shauth:      shauthConfigFromEnv(),
 		started:     time.Now(),
 		nextID:      1,
 		runners:     map[string]*Runner{},
@@ -74,12 +77,17 @@ func NewServer(addr string, logger zerolog.Logger) *Server {
 		jobs:        map[int]*Job{},
 		gitStorages: map[string]gitStorage.Storer{},
 	}
+	if err := s.shauth.validate(); err != nil {
+		panic(err)
+	}
 	s.routes()
 	return s
 }
 
 // Handler exposes the mux for in-process tests (httptest.NewServer).
-func (s *Server) Handler() http.Handler { return s.logMiddleware(s.mux) }
+func (s *Server) Handler() http.Handler {
+	return s.logMiddleware(s.shauthMiddleware(s.mux))
+}
 
 // ListenAndServe blocks serving the control-plane API.
 func (s *Server) ListenAndServe() error {
@@ -88,6 +96,9 @@ func (s *Server) ListenAndServe() error {
 }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("GET /auth/shauth", s.handleSHAUTHLogin)
+	s.mux.HandleFunc("GET /auth/shauth/callback", s.handleSHAUTHCallback)
+	s.mux.HandleFunc("POST /auth/logout", s.handleSHAUTHLogout)
 	// Runner-facing API (gitlab-runner polls these).
 	s.mux.HandleFunc("POST /api/v4/runners/verify", s.handleRunnerVerify)
 	s.mux.HandleFunc("POST /api/v4/runners", s.handleRunnerRegister)
@@ -118,6 +129,7 @@ func (s *Server) routes() {
 	// dashboard (projections over control-plane state with no clean public-API
 	// equivalent). Resource detail still comes from the public /api/v4 surface.
 	s.mux.HandleFunc("GET /internal/status", s.handleInternalStatus)
+	s.mux.HandleFunc("GET /internal/session", s.handleInternalSession)
 	s.mux.HandleFunc("GET /internal/projects", s.handleInternalProjects)
 	s.mux.HandleFunc("GET /internal/pipelines", s.handleInternalPipelines)
 	s.mux.HandleFunc("GET /internal/pipelines/{id}", s.handleInternalPipeline)
@@ -153,4 +165,8 @@ func (s *Server) logMiddleware(next http.Handler) http.Handler {
 		s.logger.Debug().Str("method", r.Method).Str("path", r.URL.Path).Msg("request")
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isHumanControlPlanePath(path string) bool {
+	return path == "/" || strings.HasPrefix(path, "/ui/") || strings.HasPrefix(path, "/internal/")
 }
