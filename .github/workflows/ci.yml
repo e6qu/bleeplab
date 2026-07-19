@@ -16,6 +16,20 @@ jobs:
           go-version-file: go.mod
       - run: go test -tags noui -count=1 -timeout 8m ./...
 
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - uses: oven-sh/setup-bun@v2.2.0
+      - run: bun install --frozen-lockfile
+        working-directory: web
+      - run: bun run typecheck
+        working-directory: web
+      - run: bun run test
+        working-directory: web
+      - run: bun run build
+        working-directory: web
+
   runner-sockerless:
     runs-on: ubuntu-latest
     timeout-minutes: 30

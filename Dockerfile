@@ -1,9 +1,9 @@
 FROM oven/bun:1.2.19-alpine AS ui-builder
 WORKDIR /src/web
-COPY web/package.json web/tsconfig.base.json web/tsconfig.json web/vite.config.ts web/vitest.config.ts web/index.html ./
+COPY web/package.json web/bun.lock web/tsconfig.base.json web/tsconfig.json web/vite.config.ts web/vitest.config.ts web/index.html ./
 COPY web/core ./core
 COPY web/src ./src
-RUN bun install && bun run build
+RUN bun install --frozen-lockfile && bun run build
 
 FROM golang:1.25-alpine AS builder
 WORKDIR /src

@@ -6,10 +6,10 @@
   "workspaces": ["core"],
   "scripts": {
     "dev": "vite",
-    "build": "bun --bun vite build",
+    "build": "bun run --cwd core build && bun --bun vite build",
     "preview": "vite preview",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "test": "bun run --cwd core test && vitest run",
+    "typecheck": "bun run --cwd core typecheck && bun run --cwd core build && tsc --noEmit"
   },
   "dependencies": {
     "@bleeplab/ui-core": "workspace:*",

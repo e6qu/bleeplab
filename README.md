@@ -33,20 +33,24 @@ The `externalURL` coordinate (`BLEEPLAB_EXTERNAL_URL`) matters here: the `git_in
 The GitLab-compatible runner API, project API, and Git smart-HTTP transports
 continue to use their GitLab tokens and remain wire-compatible. For the human
 dashboard and its `/internal/` operator projections, Bleeplab can additionally
-use Shauth OpenID Connect. Configure all four values together:
+use Shauth OpenID Connect. Configure the four required identity values together;
+set the portal coordinate so local logout returns to the shared app catalog:
 
 ```text
-BLEEPLAB_SHAUTH_ISSUER=https://auth.dev.e6qu.dev/realms/dev
+BLEEPLAB_SHAUTH_ISSUER=https://auth.dev.e6qu.dev
 BLEEPLAB_SHAUTH_CLIENT_ID=...
 BLEEPLAB_SHAUTH_CLIENT_SECRET=...
 BLEEPLAB_PUBLIC_URL=https://bleeplab.dev.e6qu.dev
+BLEEPLAB_SHAUTH_POST_LOGOUT_URL=https://auth.dev.e6qu.dev/apps
 ```
 
 Register `https://bleeplab.dev.e6qu.dev/auth/shauth/callback` as the Shauth
 client redirect URI. Bleeplab uses discovery, authorization code + PKCE, nonce
 and state checks, signed short-lived transaction/session cookies, and accepts
-only Shauth `developer` or `admin` roles. An omitted configuration preserves the
-standalone simulator mode; a partial or non-HTTPS configuration fails startup.
+only Shauth `developer` or `admin` roles. The dashboard displays the signed-in
+user's name, email, and avatar and exposes a local logout control. An omitted
+configuration preserves the standalone simulator mode; a partial or non-HTTPS
+configuration fails startup.
 
 ## What it implements
 
@@ -79,7 +83,7 @@ Bleeplab stores git repositories and CI artifacts in an **object store first**, 
 | Variable | Purpose | Default |
 |---|---|---|
 | `BLEEPLAB_EXTERNAL_URL` | Base URL for `git_info.repo_url` handed to jobs — must be reachable from the job container. | request `Host` |
-| `BLEEPLAB_S3_ENDPOINT` / `BLEEPLAB_S3_BUCKET` / `BLEEPLAB_S3_PREFIX` | S3-compatible object store for git + artifacts. `BUCKET` set ⇒ object-store mode. | — (in-memory) |
+| `BLEEPLAB_S3_ENDPOINT` / `BLEEPLAB_S3_BUCKET` / `BLEEPLAB_S3_PREFIX` / `BLEEPLAB_S3_REGION` | S3-compatible object store for git + artifacts. `BUCKET` set ⇒ object-store mode. The region must come from `BLEEPLAB_S3_REGION` or the standard AWS SDK configuration chain. | — (in-memory) |
 | `BLEEPLAB_GIT_DIR` | Filesystem directory for git repos when not using S3. | — (in-memory) |
 | `BLEEPLAB_ARTIFACTS_DIR` | Filesystem directory for artifacts when not using S3. | — (in-memory) |
 | `BLEEPLAB_BACKEND` | Selects the backend + cloud sim in the integration harness (`ecs` → AWS sim, `cloudrun` → GCP sim, …). | — |

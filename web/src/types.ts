@@ -14,6 +14,8 @@ export interface Status {
 export interface Session {
   authenticated: boolean;
   name?: string;
+  email?: string;
+  picture?: string;
   role?: string;
 }
 

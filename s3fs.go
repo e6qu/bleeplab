@@ -27,9 +27,11 @@ type s3FS struct {
 	prefix string
 }
 
-func newS3FS(ctx context.Context, endpoint, bucket, prefix string) (*s3FS, error) {
+func newS3FS(ctx context.Context, endpoint, bucket, prefix, region string) (*s3FS, error) {
 	var opts []func(*awsconfig.LoadOptions) error
-	opts = append(opts, awsconfig.WithRegion("us-east-1"))
+	if region != "" {
+		opts = append(opts, awsconfig.WithRegion(region))
+	}
 	if endpoint != "" {
 		opts = append(opts, awsconfig.WithEndpointResolverWithOptions(
 			aws.EndpointResolverWithOptionsFunc(func(service, region string, options ...interface{}) (aws.Endpoint, error) {
@@ -50,6 +52,9 @@ func newS3FS(ctx context.Context, endpoint, bucket, prefix string) (*s3FS, error
 		})
 	}
 	client := s3.NewFromConfig(cfg, clientOpts...)
+	if client.Options().Region == "" {
+		return nil, fmt.Errorf("s3 config: AWS region is required")
+	}
 
 	return &s3FS{client: client, bucket: bucket, prefix: prefix}, nil
 }
