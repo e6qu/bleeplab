@@ -33,24 +33,44 @@ The `externalURL` coordinate (`BLEEPLAB_EXTERNAL_URL`) matters here: the `git_in
 The GitLab-compatible runner API, project API, and Git smart-HTTP transports
 continue to use their GitLab tokens and remain wire-compatible. For the human
 dashboard and its `/internal/` operator projections, Bleeplab can additionally
-use Shauth OpenID Connect. Configure the four required identity values together;
-set the portal coordinate so local logout returns to the shared app catalog:
+use Shauth OpenID Connect. Configure all five identity coordinates together:
 
 ```text
 BLEEPLAB_SHAUTH_ISSUER=https://auth.dev.e6qu.dev
 BLEEPLAB_SHAUTH_CLIENT_ID=...
 BLEEPLAB_SHAUTH_CLIENT_SECRET=...
 BLEEPLAB_PUBLIC_URL=https://bleeplab.dev.e6qu.dev
-BLEEPLAB_SHAUTH_POST_LOGOUT_URL=https://auth.dev.e6qu.dev/apps
+BLEEPLAB_SHAUTH_STATE_DIR=/var/lib/bleeplab/shauth
 ```
 
-Register `https://bleeplab.dev.e6qu.dev/auth/shauth/callback` as the Shauth
-client redirect URI. Bleeplab uses discovery, authorization code + PKCE, nonce
-and state checks, signed short-lived transaction/session cookies, and accepts
-only Shauth `developer` or `admin` roles. The dashboard displays the signed-in
-user's name, email, and avatar and exposes a local logout control. An omitted
-configuration preserves the standalone simulator mode; a partial or non-HTTPS
-configuration fails startup.
+Register these exact Shauth client coordinates:
+
+```text
+redirect_uri:                    https://bleeplab.dev.e6qu.dev/auth/shauth/callback
+post_logout_redirect_uri:        https://bleeplab.dev.e6qu.dev/auth/signed-out
+backchannel_logout_uri:          https://bleeplab.dev.e6qu.dev/auth/shauth/backchannel-logout
+backchannel_logout_session_required: true
+```
+
+Bleeplab treats `BLEEPLAB_SHAUTH_ISSUER` as an exact OpenID Connect issuer
+identifier, including a trailing slash when the provider publishes one. It uses
+discovery, authorization code + PKCE, nonce and state checks, and
+accepts only Shauth `developer` or `admin` roles. The browser receives an opaque,
+HttpOnly session identifier; verified issuer, subject, `sid`, identity claims,
+expiry, and the ID token remain server-side in `BLEEPLAB_SHAUTH_STATE_DIR`.
+Every replica must mount that coordinate from the same durable filesystem (for
+example, a shared POSIX-compatible volume); startup fails when Shauth is
+configured without it. Session reads and signed logout-token replay
+claims are shared across replicas and survive process replacement. The dashboard
+displays the user's name, email, avatar, and logout control. Logout uses the
+provider's discovered RP-Initiated Logout endpoint with an ID-token hint and the
+same-origin `/auth/signed-out` landing page, and signed OpenID Connect
+Back-Channel Logout atomically revokes matching local sessions by `sid` (or all
+sessions for `sub` when no `sid` is supplied). The signed-out page clears local
+identity state and never starts a new sign-in unless the user chooses its sign-in
+link. The post-logout URI is derived from `BLEEPLAB_PUBLIC_URL`, so it cannot
+drift to another client origin. An omitted configuration preserves the standalone
+mode; a partial or non-HTTPS configuration fails startup.
 
 ## What it implements
 

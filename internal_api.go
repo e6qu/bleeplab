@@ -38,13 +38,12 @@ func (s *Server) handleInternalSession(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, sessionView{Authenticated: false})
 		return
 	}
-	cookie, err := r.Cookie(shauthSessionCookie)
+	_, session, ok, err := s.shauthSessionForRequest(r)
 	if err != nil {
-		http.Error(w, "Shauth session is missing", http.StatusUnauthorized)
+		http.Error(w, "Shauth session state is unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	var session shauthSession
-	if s.shauth.verify(cookie.Value, &session) != nil || session.Expires <= time.Now().Unix() {
+	if !ok {
 		http.Error(w, "Shauth session is invalid", http.StatusUnauthorized)
 		return
 	}

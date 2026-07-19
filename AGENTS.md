@@ -24,3 +24,18 @@ failure by narrowing validation, weakening a guard, or adding a fallback.
 Create at most one open pull request. Rebase its branch on `origin/main` before
 pushing. Never merge pull requests; the user handles all merges. Never bypass a
 commit or push hook.
+
+## Remote state is authoritative
+
+Before editing, fetch the current `origin/main` and the remote head of the open
+pull request being continued. Compare those commits with the local branch and
+dirty worktree deliberately. Never assume that a local checkout is current, and
+never discard uncommitted work while reconciling it with remote state. Rebase a
+task branch onto the freshly fetched `origin/main` before pushing it.
+
+## Announce external dependencies
+
+Tell the user before introducing any new external library, image, service, or
+hosted dependency. State what it would do and why the existing project code and
+dependencies are insufficient, then wait for direction. Do not hide an external
+dependency inside deployment configuration or generated output.
