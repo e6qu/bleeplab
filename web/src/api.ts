@@ -1,6 +1,7 @@
 // Thin client over bleeplab's read-only /internal aggregation surface. The
-// dashboard is a local operator view of the control-plane simulator, so there
-// is no auth gate (mirrors bleeplab's open /internal endpoints).
+// dashboard is a local operator view of the control-plane simulator. Shauth
+// protects these routes when configured; the client always uses same-origin
+// application sessions.
 import type {
   Status,
   Project,
@@ -21,7 +22,7 @@ async function getJSON<T>(path: string): Promise<T> {
 }
 
 export const api = {
-	  session: () => getJSON<Session>("/internal/session"),
+  session: () => getJSON<Session>("/internal/session"),
   status: () => getJSON<Status>("/internal/status"),
   projects: () => getJSON<Project[]>("/internal/projects"),
   pipelines: () => getJSON<Pipeline[]>("/internal/pipelines"),

@@ -43,7 +43,8 @@ func getS3FS(ctx context.Context) (*s3FS, error) {
 	}
 
 	prefix := os.Getenv("BLEEPLAB_S3_PREFIX")
-	fs, err := newS3FS(ctx, endpoint, bucket, prefix)
+	region := os.Getenv("BLEEPLAB_S3_REGION")
+	fs, err := newS3FS(ctx, endpoint, bucket, prefix, region)
 	if err != nil {
 		s3FSErr = err
 		return nil, err

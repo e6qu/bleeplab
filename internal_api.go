@@ -28,6 +28,8 @@ type statusView struct {
 type sessionView struct {
 	Authenticated bool   `json:"authenticated"`
 	Name          string `json:"name,omitempty"`
+	Email         string `json:"email,omitempty"`
+	Picture       string `json:"picture,omitempty"`
 	Role          string `json:"role,omitempty"`
 }
 
@@ -46,7 +48,13 @@ func (s *Server) handleInternalSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Shauth session is invalid", http.StatusUnauthorized)
 		return
 	}
-	writeJSON(w, http.StatusOK, sessionView{Authenticated: true, Name: session.Name, Role: session.Role})
+	writeJSON(w, http.StatusOK, sessionView{
+		Authenticated: true,
+		Name:          session.Name,
+		Email:         session.Email,
+		Picture:       session.Picture,
+		Role:          session.Role,
+	})
 }
 
 type projectView struct {

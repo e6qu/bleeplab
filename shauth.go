@@ -21,10 +21,18 @@ import (
 const shauthTransactionCookie = "bleeplab_shauth_tx"
 const shauthSessionCookie = "bleeplab_shauth_session"
 
-type shauthConfig struct{ issuer, clientID, clientSecret, publicURL string }
+type shauthConfig struct {
+	issuer, clientID, clientSecret, publicURL, postLogoutURL string
+}
 
 func shauthConfigFromEnv() shauthConfig {
-	return shauthConfig{issuer: strings.TrimRight(os.Getenv("BLEEPLAB_SHAUTH_ISSUER"), "/"), clientID: os.Getenv("BLEEPLAB_SHAUTH_CLIENT_ID"), clientSecret: os.Getenv("BLEEPLAB_SHAUTH_CLIENT_SECRET"), publicURL: strings.TrimRight(os.Getenv("BLEEPLAB_PUBLIC_URL"), "/")}
+	return shauthConfig{
+		issuer:        strings.TrimRight(os.Getenv("BLEEPLAB_SHAUTH_ISSUER"), "/"),
+		clientID:      os.Getenv("BLEEPLAB_SHAUTH_CLIENT_ID"),
+		clientSecret:  os.Getenv("BLEEPLAB_SHAUTH_CLIENT_SECRET"),
+		publicURL:     strings.TrimRight(os.Getenv("BLEEPLAB_PUBLIC_URL"), "/"),
+		postLogoutURL: os.Getenv("BLEEPLAB_SHAUTH_POST_LOGOUT_URL"),
+	}
 }
 func (c shauthConfig) enabled() bool {
 	return c.issuer != "" && c.clientID != "" && c.clientSecret != "" && c.publicURL != ""
@@ -40,12 +48,15 @@ func (c shauthConfig) validate() error {
 		return nil
 	}
 	if n != 4 {
-		return fmt.Errorf("all BLEEPPLAB_SHAUTH_* and BLEEPPLAB_PUBLIC_URL values must be configured together")
+		return fmt.Errorf("all BLEEPLAB_SHAUTH_* credentials and BLEEPLAB_PUBLIC_URL must be configured together")
 	}
-	for _, v := range []string{c.issuer, c.publicURL} {
+	for _, v := range []string{c.issuer, c.publicURL, c.postLogoutURL} {
+		if v == "" {
+			continue
+		}
 		u, e := url.Parse(v)
 		if e != nil || u.Scheme != "https" || u.Host == "" {
-			return fmt.Errorf("Shauth issuer and public URL must be absolute HTTPS URLs")
+			return fmt.Errorf("Shauth issuer, public URL, and post-logout URL must be absolute HTTPS URLs")
 		}
 	}
 	return nil
@@ -60,6 +71,8 @@ type shauthTransaction struct {
 type shauthSession struct {
 	Subject string `json:"s"`
 	Name    string `json:"n"`
+	Email   string `json:"m,omitempty"`
+	Picture string `json:"p,omitempty"`
 	Role    string `json:"r"`
 	Expires int64  `json:"e"`
 }
@@ -188,13 +201,22 @@ func (s *Server) handleSHAUTHCallback(w http.ResponseWriter, r *http.Request) {
 	var claims struct {
 		Nonce             string `json:"nonce"`
 		PreferredUsername string `json:"preferred_username"`
+		Email             string `json:"email"`
+		Picture           string `json:"picture"`
 		Role              string `json:"role"`
 	}
 	if token.Claims(&claims) != nil || claims.Nonce != tx.Nonce || (claims.Role != "admin" && claims.Role != "developer") {
 		http.Error(w, "Shauth identity is not authorized", 403)
 		return
 	}
-	v, e := s.shauth.sign(shauthSession{token.Subject, claims.PreferredUsername, claims.Role, time.Now().Add(8 * time.Hour).Unix()})
+	v, e := s.shauth.sign(shauthSession{
+		Subject: token.Subject,
+		Name:    claims.PreferredUsername,
+		Email:   claims.Email,
+		Picture: claims.Picture,
+		Role:    claims.Role,
+		Expires: time.Now().Add(8 * time.Hour).Unix(),
+	})
 	if e != nil {
 		http.Error(w, "could not create Shauth session", 500)
 		return
@@ -204,5 +226,9 @@ func (s *Server) handleSHAUTHCallback(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleSHAUTHLogout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: shauthSessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: s.secureCookie(), SameSite: http.SameSiteLaxMode})
-	http.Redirect(w, r, "/ui/", http.StatusFound)
+	target := "/ui/"
+	if s.shauth.postLogoutURL != "" {
+		target = s.shauth.postLogoutURL
+	}
+	http.Redirect(w, r, target, http.StatusFound)
 }
