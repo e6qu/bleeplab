@@ -38,6 +38,7 @@ type Server struct {
 	// Set via BLEEPLAB_EXTERNAL_URL; empty falls back to the request Host.
 	externalURL string
 	shauth      shauthConfig
+	shauthState *shauthStateStore
 	// started is the process start time, surfaced as uptime on /internal/status.
 	started time.Time
 
@@ -80,6 +81,13 @@ func NewServer(addr string, logger zerolog.Logger) *Server {
 	if err := s.shauth.validate(); err != nil {
 		panic(err)
 	}
+	if s.shauth.enabled() {
+		var err error
+		s.shauthState, err = newSHAUTHStateStore(s.shauth.stateDir)
+		if err != nil {
+			panic(err)
+		}
+	}
 	s.routes()
 	return s
 }
@@ -98,7 +106,9 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /auth/shauth", s.handleSHAUTHLogin)
 	s.mux.HandleFunc("GET /auth/shauth/callback", s.handleSHAUTHCallback)
+	s.mux.HandleFunc("GET /auth/signed-out", s.handleSHAUTHSignedOut)
 	s.mux.HandleFunc("POST /auth/logout", s.handleSHAUTHLogout)
+	s.mux.HandleFunc("POST /auth/shauth/backchannel-logout", s.handleSHAUTHBackChannelLogout)
 	// Runner-facing API (gitlab-runner polls these).
 	s.mux.HandleFunc("POST /api/v4/runners/verify", s.handleRunnerVerify)
 	s.mux.HandleFunc("POST /api/v4/runners", s.handleRunnerRegister)
