@@ -58,6 +58,12 @@ try {
   await page.getByText("admin@localhost.test", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Log out" }).waitFor();
   await assertSession(context, "http://127.0.0.1:18929", true);
+  assertPersistedIdentity(primaryState, {
+    name: "admin",
+    email: "admin@localhost.test",
+    email_verified: true,
+    role: "admin",
+  });
   response = await context.request.post("http://127.0.0.1:18929/api/v4/projects", {
     data: { name: "admin-control-plane" },
   });
@@ -88,12 +94,20 @@ try {
       email: "bleeplab-developer@localhost.test",
       role: "developer",
     });
+    assertPersistedIdentity(primaryState, {
+      name: "bleeplab-developer",
+      email: "bleeplab-developer@localhost.test",
+      email_verified: true,
+      role: "developer",
+    });
     response = await developerContext.request.post("http://127.0.0.1:18929/api/v4/projects", {
       data: { name: "developer-control-plane" },
     });
     assert.equal(response.status(), 201, `developer control-plane request failed: ${await response.text()}`);
     await developerPage.getByRole("button", { name: "Log out" }).click();
     await developerPage.waitForURL("http://127.0.0.1:18929/auth/signed-out");
+    const developerSignIn = developerPage.getByRole("link", { name: "Sign in with Shauth" });
+    assert.equal(await developerSignIn.getAttribute("href"), "/auth/shauth?return_to=%2Fui%2F");
     await assertSession(developerContext, "http://127.0.0.1:18929", false);
   } finally {
     await developerContext.close();
@@ -145,9 +159,31 @@ try {
   // directly now reaches the one real Shauth login page instead of failing open.
   await page.reload();
   await page.getByRole("heading", { name: "You are signed out" }).waitFor();
+  let signIn = page.getByRole("link", { name: "Sign in with Shauth" });
+  assert.equal(await signIn.getAttribute("href"), "/auth/shauth?return_to=%2Fui%2F");
+  await page.emulateMedia({ colorScheme: "light" });
+  const lightBackground = await page.locator("body").evaluate((element) => getComputedStyle(element).backgroundColor);
+  await page.emulateMedia({ colorScheme: "dark" });
+  const darkBackground = await page.locator("body").evaluate((element) => getComputedStyle(element).backgroundColor);
+  assert.notEqual(lightBackground, darkBackground, "signed-out page ignored the browser color scheme");
+
   await page.goto("http://localhost:18930/ui/");
   await page.waitForURL((url) => url.origin === "http://localhost:48080" && url.pathname === "/login");
   await page.locator("#username").waitFor();
+
+  // The explicit control recovers through Bleeplab's same-origin starter. A
+  // globally logged-out browser must authenticate once, then return to the
+  // initiating Bleeplab application with the strict identity gate satisfied.
+  await page.goto("http://127.0.0.1:18929/auth/signed-out");
+  signIn = page.getByRole("link", { name: "Sign in with Shauth" });
+  await signIn.click();
+  await page.waitForURL((url) => url.origin === "http://localhost:48080" && url.pathname === "/login");
+  await page.locator("#username").fill("admin");
+  await page.locator("#password").fill(password);
+  await page.getByRole("button", { name: "Sign in with password" }).click();
+  await page.waitForURL("http://127.0.0.1:18929/ui/");
+  await assertSession(context, "http://127.0.0.1:18929", true);
+  assert.equal(loginVisits, 3, "signed-out recovery did not perform exactly one fresh Shauth login");
   assert.deepEqual(errors, []);
 } finally {
   await browser.close();
@@ -179,6 +215,20 @@ function readOnlySessionSID(stateRoot) {
   const session = JSON.parse(fs.readFileSync(path.join(stateRoot, "sessions", files[0]), "utf8"));
   assert.ok(session.sid, `session in ${stateRoot} omitted sid`);
   return session.sid;
+}
+
+function assertPersistedIdentity(stateRoot, expected) {
+  const sessions = fs.readdirSync(path.join(stateRoot, "sessions"))
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(stateRoot, "sessions", name), "utf8")));
+  const session = sessions.find((candidate) => candidate.name === expected.name);
+  assert.ok(session, `persisted session for ${expected.name} was unavailable`);
+  assert.deepEqual({
+    name: session.name,
+    email: session.email,
+    email_verified: session.email_verified,
+    role: session.role,
+  }, expected);
 }
 
 async function waitForLogoutClaim(stateRoot) {

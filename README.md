@@ -82,12 +82,15 @@ before any provider discovery or logout network work, so an unavailable
 provider cannot leave Bleeplab authenticated. OpenID Connect Front-Channel
 Logout revokes the exact issuer and `sid`, and signed Back-Channel Logout
 atomically revokes matching local sessions by `sid` (or all sessions for `sub`
-when no `sid` is supplied). The signed-out page clears local
-identity state and never starts a new sign-in unless the user chooses its sign-in
-link. The post-logout URI is derived from `BLEEPLAB_PUBLIC_URL`, so it cannot
-drift to another client origin. An omitted configuration preserves the
-repository-local standalone mode; a partial or non-HTTPS configuration fails
-startup.
+when no `sid` is supplied). The signed-out page clears local identity state,
+remains local across reloads, and never starts a new sign-in unless the user
+chooses its exact `Sign in with Shauth` control. That control enters the
+same-origin `/auth/shauth` starter and returns to `/ui/`. The accessible,
+responsive page uses saturated light and dark palettes, keyboard focus cues,
+and reduced-motion preferences without loading a runtime dependency. The
+post-logout URI is derived from `BLEEPLAB_PUBLIC_URL`, so it cannot drift to
+another client origin. An omitted configuration preserves the repository-local
+standalone mode; a partial or non-HTTPS configuration fails startup.
 
 `BLEEPLAB_ALLOW_INSECURE_OIDC=true` permits HTTP only for loopback hostnames.
 It exists solely for repository-local integration tests; non-loopback issuer
@@ -199,12 +202,13 @@ SOCKERLESS_ROOT=/path/to/sockerless make runner-sockerless-test
 The harness ([`test/runner/sockerless/run-integration.sh`](test/runner/sockerless/run-integration.sh)) exercises the whole runner-as-cloud-task data plane end to end: clone + compile, artifacts across stages, and `services:` sidecars over the network pod. Set `BLEEPLAB_HOLD=1` to hold the stack (Bleeplab `:8929`, backend `:3375`) for inspection on failure. It uses `docker buildx build --load` because the runner image must be available to the local Docker API.
 
 The Shauth acceptance harness is owned by this repository and pins the reviewed
-Shauth commit. It proves direct entry, catalog launch, verified identity,
-single-login SSO across two relying parties, strict Front-Channel Logout,
-signed Back-Channel Logout, RP-Initiated Logout returning to Bleeplab, and
-fail-closed access after the shared session ends. It reuses the test-only
-Playwright installation locked by that Shauth checkout; Bleeplab has no
-oauth2-proxy or other authentication proxy dependency.
+Shauth commit. It proves direct entry, catalog launch, verified email and role
+claims, single-login SSO across two relying parties, strict Front-Channel
+Logout, signed Back-Channel Logout, RP-Initiated Logout returning to Bleeplab,
+persistent app-local signed-out reload, explicit recovery through the
+same-origin starter, and fail-closed access after the shared session ends. It
+reuses the test-only Playwright installation locked by that Shauth checkout;
+Bleeplab has no oauth2-proxy or other authentication proxy dependency.
 
 ## Source layout
 

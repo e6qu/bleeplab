@@ -113,6 +113,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /auth/shauth", s.handleSHAUTHLogin)
 	s.mux.HandleFunc("GET /auth/shauth/callback", s.handleSHAUTHCallback)
 	s.mux.HandleFunc("GET /auth/signed-out", s.handleSHAUTHSignedOut)
+	s.mux.HandleFunc("GET /auth/signed-out.css", handleSHAUTHSignedOutStyles)
 	s.mux.HandleFunc("POST /auth/logout", s.handleSHAUTHLogout)
 	s.mux.HandleFunc("GET /auth/shauth/frontchannel-logout", s.handleSHAUTHFrontChannelLogout)
 	s.mux.HandleFunc("POST /auth/shauth/backchannel-logout", s.handleSHAUTHBackChannelLogout)
