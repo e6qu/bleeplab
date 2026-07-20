@@ -132,7 +132,7 @@ func (s *Server) handleArtifactUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "404 job not found", http.StatusNotFound)
 		return
 	}
-	if tok := r.Header.Get("JOB-TOKEN"); tok != "" && tok != job.Token {
+	if !tokenMatches(job.Token, r.Header.Get("JOB-TOKEN")) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
 		return
 	}
@@ -194,7 +194,7 @@ func (s *Server) handleArtifactDownload(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "404 job not found", http.StatusNotFound)
 		return
 	}
-	if tok := r.Header.Get("JOB-TOKEN"); tok != "" && tok != job.Token {
+	if !tokenMatches(job.Token, r.Header.Get("JOB-TOKEN")) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
 		return
 	}

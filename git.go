@@ -163,6 +163,36 @@ func (s *Server) tryHandleGitRequest(w http.ResponseWriter, r *http.Request) boo
 	return false
 }
 
+func (s *Server) authorizeGitRequest(w http.ResponseWriter, r *http.Request, repoPath string) bool {
+	username, presented, ok := r.BasicAuth()
+	if !ok || username != "gitlab-ci-token" {
+		w.Header().Set("WWW-Authenticate", `Basic realm="Bleeplab Git"`)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "HTTP Basic: Access denied"})
+		return false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	projectID := 0
+	for _, project := range s.projects {
+		if project.Path == repoPath {
+			projectID = project.ID
+			break
+		}
+	}
+	if projectID != 0 {
+		for _, job := range s.jobs {
+			if job.ProjectID == projectID && tokenMatches(job.Token, presented) {
+				return true
+			}
+		}
+	}
+
+	w.Header().Set("WWW-Authenticate", `Basic realm="Bleeplab Git"`)
+	writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "HTTP Basic: Access denied"})
+	return false
+}
+
 func (s *Server) gitEndpoint(repoPath string) (*transport.Endpoint, error) {
 	return transport.NewEndpoint("/" + repoPath)
 }
@@ -170,6 +200,9 @@ func (s *Server) gitEndpoint(repoPath string) (*transport.Endpoint, error) {
 func (s *Server) handleGitInfoRefs(w http.ResponseWriter, r *http.Request, repoPath string) {
 	if s.gitStorageFor(repoPath) == nil {
 		http.NotFound(w, r)
+		return
+	}
+	if !s.authorizeGitRequest(w, r, repoPath) {
 		return
 	}
 	service := r.URL.Query().Get("service")
@@ -227,6 +260,9 @@ func (s *Server) handleGitUploadPack(w http.ResponseWriter, r *http.Request, rep
 		http.NotFound(w, r)
 		return
 	}
+	if !s.authorizeGitRequest(w, r, repoPath) {
+		return
+	}
 	ep, err := s.gitEndpoint(repoPath)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -258,6 +294,9 @@ func (s *Server) handleGitReceivePack(w http.ResponseWriter, r *http.Request, re
 	stor := s.gitStorageFor(repoPath)
 	if stor == nil {
 		http.NotFound(w, r)
+		return
+	}
+	if !s.authorizeGitRequest(w, r, repoPath) {
 		return
 	}
 	ep, err := s.gitEndpoint(repoPath)

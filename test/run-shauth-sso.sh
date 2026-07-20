@@ -66,6 +66,8 @@ export GITHUB_CLIENT_ID="local-password-integration"
 export GITHUB_CLIENT_SECRET="local-password-integration"
 SHAUTH_BOOTSTRAP_ADMIN_PASSWORD="$(random_secret)"
 export SHAUTH_BOOTSTRAP_ADMIN_PASSWORD
+SHAUTH_DEVELOPER_PASSWORD="$(random_secret)"
+export SHAUTH_DEVELOPER_PASSWORD
 primary_secret="$(random_secret)"
 secondary_secret="$(random_secret)"
 export SHAUTH_BOOTSTRAP_APPS_JSON

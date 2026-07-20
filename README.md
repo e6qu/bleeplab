@@ -30,10 +30,11 @@ The `externalURL` coordinate (`BLEEPLAB_EXTERNAL_URL`) matters here: the `git_in
 
 ## Shauth browser sign-in
 
-The GitLab-compatible runner API, project API, and Git smart-HTTP transports
-continue to use their GitLab tokens and remain wire-compatible. For the human
-dashboard and its `/internal/` operator projections, Bleeplab can additionally
-use Shauth OpenID Connect. Configure all five identity coordinates together:
+The GitLab-compatible runner, job, artifact, and Git smart-HTTP transports use
+their native registration, runner, and job tokens. The human project,
+pipeline, and runner-management API, dashboard, and `/internal/` operator
+projections use Shauth OpenID Connect when Shauth is configured. Configure all
+five identity coordinates together:
 
 ```text
 BLEEPLAB_SHAUTH_ISSUER=https://auth.dev.e6qu.dev
@@ -42,6 +43,11 @@ BLEEPLAB_SHAUTH_CLIENT_SECRET=...
 BLEEPLAB_PUBLIC_URL=https://bleeplab.dev.e6qu.dev
 BLEEPLAB_SHAUTH_STATE_DIR=/var/lib/bleeplab/shauth
 ```
+
+The optional legacy `POST /api/v4/runners` registration flow is enabled only
+when `BLEEPLAB_RUNNER_REGISTRATION_TOKEN` is set; the request's GitLab
+`token` field must match it. Modern runners use a runner authentication token
+created through the Shauth-protected `POST /api/v4/user/runners` flow.
 
 Register these exact Shauth client coordinates:
 
@@ -58,7 +64,11 @@ Bleeplab treats `BLEEPLAB_SHAUTH_ISSUER` as an exact OpenID Connect issuer
 identifier, including a trailing slash when the provider publishes one. It uses
 discovery, authorization code + PKCE, `client_secret_post`, nonce and state
 checks, and accepts only Shauth `developer` or `admin` roles backed by a
-non-empty, verified email address. The browser receives an opaque,
+non-empty, verified email address. Every non-runner `/api/v4/` route defaults
+to Shauth protection, so newly added control-plane routes fail closed until
+their authentication contract is chosen deliberately. An unauthenticated API
+request receives GitLab-shaped `401` JSON; browser pages enter the OpenID
+Connect flow. The browser receives an opaque,
 HttpOnly session identifier; verified issuer, subject, `sid`, identity claims,
 expiry, and the ID token remain server-side in `BLEEPLAB_SHAUTH_STATE_DIR`.
 Every replica must mount that coordinate from the same durable filesystem (for
@@ -75,8 +85,9 @@ atomically revokes matching local sessions by `sid` (or all sessions for `sub`
 when no `sid` is supplied). The signed-out page clears local
 identity state and never starts a new sign-in unless the user chooses its sign-in
 link. The post-logout URI is derived from `BLEEPLAB_PUBLIC_URL`, so it cannot
-drift to another client origin. An omitted configuration preserves the standalone
-mode; a partial or non-HTTPS configuration fails startup.
+drift to another client origin. An omitted configuration preserves the
+repository-local standalone mode; a partial or non-HTTPS configuration fails
+startup.
 
 `BLEEPLAB_ALLOW_INSECURE_OIDC=true` permits HTTP only for loopback hostnames.
 It exists solely for repository-local integration tests; non-loopback issuer
@@ -87,18 +98,21 @@ and application coordinates remain HTTPS-only.
 All under one binary on one port (`:8929` by default).
 
 **Runner-facing API** (`gitlab-runner` polls these):
-- `POST /api/v4/runners/verify`, `POST /api/v4/runners`, `DELETE /api/v4/runners` — register / verify / unregister.
+- `POST /api/v4/runners/verify`, `POST /api/v4/runners`, `DELETE /api/v4/runners` — verify, legacy registration-token registration, and authenticated unregister.
 - `POST /api/v4/jobs/request` — long-poll job claim (201 with a job, or 204 when the queue is empty).
 - `PUT /api/v4/jobs/{id}` — job completion (success/failed).
 - `PATCH /api/v4/jobs/{id}/trace` — incremental build-log streaming.
 - `POST /api/v4/jobs/{id}/artifacts`, `GET /api/v4/jobs/{id}/artifacts` — artifact upload / dependency download.
 
-**Control-plane API** (the orchestrator / test harness drives these):
+**Shauth-protected control-plane API** (the UI / operator drives these in a
+configured deployment; repository-local harnesses use standalone mode):
 - `POST /api/v4/user/runners` — mint a runner registration token.
 - `POST /api/v4/projects`, `POST /api/v4/projects/{id}/repository/commits` — create a project and commit its `.gitlab-ci.yml` + files.
 - `POST /api/v4/projects/{id}/pipeline`, `GET .../pipelines`, `GET .../pipelines/{pid}`, `GET .../pipelines/{pid}/jobs`, `GET .../jobs/{jid}/trace` — trigger a pipeline and read pipeline/job/trace status.
 
-**Git smart-HTTP** — `clone` / `fetch` / `push` on dynamic `/{namespace}/{project}.git/...` paths ([`git.go`](git.go)).
+**Git smart-HTTP** — `clone` / `fetch` / `push` on dynamic
+`/{namespace}/{project}.git/...` paths ([`git.go`](git.go)), authenticated as
+`gitlab-ci-token` with a job token belonging to that project.
 
 **Internal read-only surface** (`/internal/*`) — projections the embedded SPA consumes for its dashboard (status, projects, pipelines, jobs, runners, storage). Resource detail still comes from the public `/api/v4` surface; the internal routes exist only where there is no clean public-API equivalent.
 
@@ -113,6 +127,7 @@ Bleeplab stores git repositories and CI artifacts in an **object store first**, 
 | Variable | Purpose | Default |
 |---|---|---|
 | `BLEEPLAB_EXTERNAL_URL` | Base URL for `git_info.repo_url` handed to jobs — must be reachable from the job container. | request `Host` |
+| `BLEEPLAB_RUNNER_REGISTRATION_TOKEN` | Instance token for the legacy GitLab runner registration endpoint. An unset value disables legacy registration. | — |
 | `BLEEPLAB_S3_ENDPOINT` / `BLEEPLAB_S3_BUCKET` / `BLEEPLAB_S3_PREFIX` / `BLEEPLAB_S3_REGION` | S3-compatible object store for git + artifacts. `BUCKET` set ⇒ object-store mode. The region must come from `BLEEPLAB_S3_REGION` or the standard AWS SDK configuration chain. | — (in-memory) |
 | `BLEEPLAB_GIT_DIR` | Filesystem directory for git repos when not using S3. | — (in-memory) |
 | `BLEEPLAB_ARTIFACTS_DIR` | Filesystem directory for artifacts when not using S3. | — (in-memory) |
@@ -128,7 +143,10 @@ make build                   # → ./bleeplab-server
 ./bleeplab-server -addr :8929 -log-level debug
 ```
 
-Nothing is required in the environment for the in-memory default — a runner can register and run jobs immediately. Point `BLEEPLAB_S3_*` or `BLEEPLAB_GIT_DIR` at durable storage to keep repos and artifacts across restarts.
+Nothing is required in the environment for the in-memory standalone default —
+the control-plane API can create a runner authentication token and run jobs
+immediately. Point `BLEEPLAB_S3_*` or `BLEEPLAB_GIT_DIR` at durable storage to
+keep repos and artifacts across restarts.
 
 ## Container images
 

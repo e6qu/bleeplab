@@ -51,11 +51,32 @@ func TestGitCloneSeededProject(t *testing.T) {
 		t.Fatal("commit returned empty SHA")
 	}
 
-	// Clone over HTTP with a real git client (the gitlab-ci-token the runner
-	// would send is accepted, matching GitLab).
+	// Create and claim the real CI job whose token authorizes Git smart-HTTP.
+	// Bleeplab accepts the same gitlab-ci-token credentials GitLab Runner sends;
+	// an arbitrary password must not read the repository.
+	_, body = do(t, ts, http.MethodPost, "/api/v4/user/runners", map[string]any{"runner_type": "project_type"}, nil)
+	var runner struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &runner); err != nil {
+		t.Fatalf("decode runner: %v", err)
+	}
+	resp, body = do(t, ts, http.MethodPost, "/api/v4/projects/"+strconv.Itoa(proj.ID)+"/pipeline", map[string]any{"ref": "main"}, nil)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create pipeline: %d %s", resp.StatusCode, body)
+	}
+	job := claimJob(t, ts, runner.Token)
+
+	if _, err := git.Clone(memory.NewStorage(), memfs.New(), &git.CloneOptions{
+		URL:  ts.URL + "/root/demo.git",
+		Auth: &githttp.BasicAuth{Username: "gitlab-ci-token", Password: "wrong-job-token"},
+	}); err == nil {
+		t.Fatal("clone with an unrelated job token succeeded")
+	}
+
 	repo, err := git.Clone(memory.NewStorage(), memfs.New(), &git.CloneOptions{
 		URL:  ts.URL + "/root/demo.git",
-		Auth: &githttp.BasicAuth{Username: "gitlab-ci-token", Password: "tok"},
+		Auth: &githttp.BasicAuth{Username: "gitlab-ci-token", Password: job.Token},
 	})
 	if err != nil {
 		t.Fatalf("clone: %v", err)
@@ -95,7 +116,7 @@ func TestGitCloneSeededProject(t *testing.T) {
 	}
 	repo2, err := git.Clone(memory.NewStorage(), memfs.New(), &git.CloneOptions{
 		URL:  ts.URL + "/root/demo.git",
-		Auth: &githttp.BasicAuth{Username: "gitlab-ci-token", Password: "tok"},
+		Auth: &githttp.BasicAuth{Username: "gitlab-ci-token", Password: job.Token},
 	})
 	if err != nil {
 		t.Fatalf("re-clone: %v", err)

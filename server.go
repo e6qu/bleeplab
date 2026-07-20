@@ -17,6 +17,7 @@ package bleeplab
 import (
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,10 @@ type Server struct {
 	externalURL string
 	shauth      shauthConfig
 	shauthState *shauthStateStore
+	// runnerRegistrationToken is the instance registration token accepted by
+	// GitLab's legacy POST /api/v4/runners machine flow. The modern
+	// POST /api/v4/user/runners control-plane flow is authenticated by Shauth.
+	runnerRegistrationToken string
 	// started is the process start time, surfaced as uptime on /internal/status.
 	started time.Time
 
@@ -65,18 +70,19 @@ type Server struct {
 // NewServer constructs an empty bleeplab control plane listening on addr.
 func NewServer(addr string, logger zerolog.Logger) *Server {
 	s := &Server{
-		addr:        addr,
-		logger:      logger,
-		mux:         http.NewServeMux(),
-		externalURL: os.Getenv("BLEEPLAB_EXTERNAL_URL"),
-		shauth:      shauthConfigFromEnv(),
-		started:     time.Now(),
-		nextID:      1,
-		runners:     map[string]*Runner{},
-		projects:    map[int]*Project{},
-		pipelines:   map[int]*Pipeline{},
-		jobs:        map[int]*Job{},
-		gitStorages: map[string]gitStorage.Storer{},
+		addr:                    addr,
+		logger:                  logger,
+		mux:                     http.NewServeMux(),
+		externalURL:             os.Getenv("BLEEPLAB_EXTERNAL_URL"),
+		shauth:                  shauthConfigFromEnv(),
+		runnerRegistrationToken: os.Getenv("BLEEPLAB_RUNNER_REGISTRATION_TOKEN"),
+		started:                 time.Now(),
+		nextID:                  1,
+		runners:                 map[string]*Runner{},
+		projects:                map[int]*Project{},
+		pipelines:               map[int]*Pipeline{},
+		jobs:                    map[int]*Job{},
+		gitStorages:             map[string]gitStorage.Storer{},
 	}
 	if err := s.shauth.validate(); err != nil {
 		panic(err)
@@ -180,4 +186,40 @@ func (s *Server) logMiddleware(next http.Handler) http.Handler {
 
 func isHumanControlPlanePath(path string) bool {
 	return path == "/" || strings.HasPrefix(path, "/ui/") || strings.HasPrefix(path, "/internal/")
+}
+
+// isGitLabMachineAPIRequest recognizes only the routes whose GitLab contract
+// authenticates with a runner or job token. Every other /api/v4 route is a
+// human control-plane route and therefore defaults to Shauth protection when
+// Shauth is configured. Keeping the allowlist here makes new API routes fail
+// closed until their authentication contract is chosen deliberately.
+func isGitLabMachineAPIRequest(r *http.Request) bool {
+	path := r.URL.Path
+	switch {
+	case path == "/api/v4/runners/verify" && r.Method == http.MethodPost:
+		return true
+	case path == "/api/v4/runners" && (r.Method == http.MethodPost || r.Method == http.MethodDelete):
+		return true
+	case path == "/api/v4/jobs/request" && r.Method == http.MethodPost:
+		return true
+	}
+
+	const prefix = "/api/v4/jobs/"
+	if !strings.HasPrefix(path, prefix) {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(path, prefix), "/")
+	if len(parts) == 0 {
+		return false
+	}
+	if _, err := strconv.Atoi(parts[0]); err != nil {
+		return false
+	}
+	return (len(parts) == 1 && r.Method == http.MethodPut) ||
+		(len(parts) == 2 && parts[1] == "trace" && r.Method == http.MethodPatch) ||
+		(len(parts) == 2 && parts[1] == "artifacts" && (r.Method == http.MethodGet || r.Method == http.MethodPost))
+}
+
+func isSHAUTHControlPlaneAPIRequest(r *http.Request) bool {
+	return strings.HasPrefix(r.URL.Path, "/api/v4/") && !isGitLabMachineAPIRequest(r)
 }
