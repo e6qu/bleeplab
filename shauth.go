@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,12 @@ const shauthTransactionCookie = "bleeplab_shauth_tx"
 const shauthSessionCookie = "bleeplab_shauth_session"
 const backChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 const shauthMaximumSessionLifetime = 8 * time.Hour
+
+//go:embed auth/signed-out.html
+var shauthSignedOutHTML string
+
+//go:embed auth/signed-out.css
+var shauthSignedOutCSS string
 
 type shauthConfig struct {
 	issuer, clientID, clientSecret, publicURL, stateDir string
@@ -435,20 +442,20 @@ func (s *Server) handleSHAUTHSignedOut(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{Name: shauthTransactionCookie, Path: "/auth/shauth", MaxAge: -1, HttpOnly: true, Secure: s.secureCookie(), SameSite: http.SameSiteLaxMode})
 	}
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Signed out · Bleeplab</title><style>
-:root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,sans-serif;background:#f6f8fa;color:#1f2328}
-body{min-height:100vh;margin:0;display:grid;place-items:center;background:radial-gradient(circle at top,#dbeafe,transparent 48%),#f6f8fa}
-main{box-sizing:border-box;width:min(32rem,calc(100% - 2rem));padding:2.5rem;border:1px solid #d0d7de;border-radius:1rem;background:#fff;box-shadow:0 1rem 3rem #1f23281a;text-align:center}
-h1{margin:0 0 .75rem;font-size:2rem}p{margin:0 0 1.5rem;color:#59636e;line-height:1.55}
-a{display:inline-block;padding:.75rem 1rem;border-radius:.5rem;background:#1f883d;color:#fff;font-weight:700;text-decoration:none}a:focus-visible{outline:3px solid #0969da;outline-offset:3px}
-@media(prefers-color-scheme:dark){:root{background:#0d1117;color:#f0f6fc}body{background:radial-gradient(circle at top,#102a56,transparent 48%),#0d1117}main{background:#161b22;border-color:#30363d;box-shadow:0 1rem 3rem #0008}p{color:#8b949e}a{background:#3fb950;color:#0d1117}}
-</style></head><body><main><h1>You are signed out</h1><p>Your Bleeplab session has ended. Sign in again only when you are ready.</p><a href="/auth/shauth?return_to=%2Fui%2F">Sign in to Bleeplab</a></main></body></html>`))
+	_, _ = w.Write([]byte(shauthSignedOutHTML))
+}
+
+func handleSHAUTHSignedOutStyles(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write([]byte(shauthSignedOutCSS))
 }
 
 func (s *Server) handleSHAUTHBackChannelLogout(w http.ResponseWriter, r *http.Request) {

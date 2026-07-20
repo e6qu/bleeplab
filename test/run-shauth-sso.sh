@@ -5,7 +5,7 @@ set -euo pipefail
 : "${SHAUTH_SOURCE_DIR:?SHAUTH_SOURCE_DIR must point to the pinned Shauth checkout}"
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
-expected_shauth_commit="8b5d7d34805282c797172c15efd768fba44d033c"
+expected_shauth_commit="3061b265a79926596fe2a6db086933031ed32140"
 actual_shauth_commit="$(git -C "$SHAUTH_SOURCE_DIR" rev-parse HEAD)"
 if [[ "$actual_shauth_commit" != "$expected_shauth_commit" ]]; then
   printf 'Shauth checkout is %s; expected reviewed commit %s\n' "$actual_shauth_commit" "$expected_shauth_commit" >&2

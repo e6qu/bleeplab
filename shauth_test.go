@@ -184,14 +184,28 @@ func TestSHAUTHSignedOutClearsLocalStateWithoutStartingLogin(t *testing.T) {
 	if response.Code != http.StatusOK || response.Header().Get("Location") != "" {
 		t.Fatalf("signed-out landing = %d location %q: %s", response.Code, response.Header().Get("Location"), response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "You are signed out") || !strings.Contains(response.Body.String(), `href="/auth/shauth?return_to=%2Fui%2F"`) {
+	if !strings.Contains(response.Body.String(), `aria-label="Bleeplab">Bleeplab</span>`) ||
+		!strings.Contains(response.Body.String(), `<h1 id="signed-out-title">You are signed out</h1>`) ||
+		!strings.Contains(response.Body.String(), `href="/auth/shauth?return_to=%2Fui%2F">Sign in with Shauth</a>`) {
 		t.Fatalf("signed-out landing did not render explicit login UI: %s", response.Body.String())
 	}
-	if response.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("signed-out landing cache control = %q", response.Header().Get("Cache-Control"))
+	if response.Header().Get("Cache-Control") != "no-store" || strings.Contains(response.Header().Get("Content-Security-Policy"), "unsafe-inline") {
+		t.Fatalf("signed-out landing security headers: cache=%q CSP=%q", response.Header().Get("Cache-Control"), response.Header().Get("Content-Security-Policy"))
 	}
 	if _, exists := testSessionExists(t, s, sessionID); exists {
 		t.Fatal("signed-out landing retained the local session")
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/auth/signed-out.css", nil)
+	response = httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/css; charset=utf-8" {
+		t.Fatalf("signed-out stylesheet = %d content-type %q", response.Code, response.Header().Get("Content-Type"))
+	}
+	for _, contract := range []string{"prefers-color-scheme: dark", ".primary-action:focus-visible", "prefers-reduced-motion: no-preference"} {
+		if !strings.Contains(response.Body.String(), contract) {
+			t.Fatalf("signed-out stylesheet omitted %q", contract)
+		}
 	}
 }
 
