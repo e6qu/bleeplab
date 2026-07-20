@@ -5,6 +5,8 @@ build: web-build
 
 web-build:
 	cd web && bun install --frozen-lockfile && bun run build
+	rm -rf dist
+	mkdir -p dist
 	cp -R web/dist/. dist/
 
 test:

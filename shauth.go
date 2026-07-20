@@ -183,17 +183,27 @@ func (s *Server) shauthSessionForRequest(r *http.Request) (string, shauthSession
 
 func (s *Server) shauthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.shauth.enabled() || !isHumanControlPlanePath(r.URL.Path) {
+		browserSurface := isHumanControlPlanePath(r.URL.Path)
+		controlPlaneAPI := isSHAUTHControlPlaneAPIRequest(r)
+		if !s.shauth.enabled() || (!browserSurface && !controlPlaneAPI) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		_, _, ok, err := s.shauthSessionForRequest(r)
 		if err != nil {
-			http.Error(w, "Shauth session state is unavailable", http.StatusServiceUnavailable)
+			if controlPlaneAPI {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"message": "503 Shauth session state is unavailable"})
+			} else {
+				http.Error(w, "Shauth session state is unavailable", http.StatusServiceUnavailable)
+			}
 			return
 		}
 		if ok {
 			next.ServeHTTP(w, r)
+			return
+		}
+		if controlPlaneAPI {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "401 Unauthorized"})
 			return
 		}
 		returnTo := safeReturnTo(r.URL.RequestURI())

@@ -34,6 +34,17 @@ func (s *Server) handleRunnerVerify(w http.ResponseWriter, r *http.Request) {
 // (`POST /api/v4/runners` with a registration token) — it mints and returns
 // a new runner authentication token.
 func (s *Server) handleRunnerRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !tokenMatches(s.runnerRegistrationToken, req.Token) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rn := s.newRunnerLocked()
@@ -50,6 +61,11 @@ func (s *Server) handleRunnerUnregister(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	s.mu.Lock()
+	if _, ok := s.runners[req.Token]; !ok {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+		return
+	}
 	delete(s.runners, req.Token)
 	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
@@ -131,7 +147,7 @@ func (s *Server) handleJobUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "404 job not found", http.StatusNotFound)
 		return
 	}
-	if job.Token != req.Token {
+	if !tokenMatches(job.Token, req.Token) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
 		return
 	}
@@ -161,7 +177,7 @@ func (s *Server) handleJobTrace(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "404 job not found", http.StatusNotFound)
 		return
 	}
-	if tok := r.Header.Get("JOB-TOKEN"); tok != "" && tok != job.Token {
+	if !tokenMatches(job.Token, r.Header.Get("JOB-TOKEN")) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
 		return
 	}

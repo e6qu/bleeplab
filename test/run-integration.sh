@@ -677,6 +677,8 @@ EOF
 # compiles calc.c with gcc and publishes the `calc` binary as an artifact; the
 # test job downloads that artifact (no recompile — it has no toolchain) and
 # verifies real arithmetic, proving cross-stage artifact passing end to end.
+# Command substitutions run inside the CI jobs.
+# shellcheck disable=SC2016
 CI='stages: [build, test, integration]
 build-job:
   stage: build
@@ -752,6 +754,7 @@ check_interval = 1
   url = "$BLEEPLAB_EXTERNAL_URL"
   token = "$TOKEN"
   executor = "docker"
+  request_concurrency = 2
   [runners.docker]
     host = "tcp://127.0.0.1:3375"
     image = "alpine:3.20"

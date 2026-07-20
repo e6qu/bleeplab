@@ -5,10 +5,12 @@ import { pathToFileURL } from "node:url";
 
 const shauthSource = process.env.SHAUTH_SOURCE_DIR;
 const password = process.env.SHAUTH_BOOTSTRAP_ADMIN_PASSWORD;
+const developerPassword = process.env.SHAUTH_DEVELOPER_PASSWORD;
 const primaryState = process.env.BLEEPLAB_PRIMARY_STATE_DIR;
 const secondaryState = process.env.BLEEPLAB_SECONDARY_STATE_DIR;
 assert.ok(shauthSource, "SHAUTH_SOURCE_DIR is required");
 assert.ok(password, "SHAUTH_BOOTSTRAP_ADMIN_PASSWORD is required");
+assert.ok(developerPassword, "SHAUTH_DEVELOPER_PASSWORD is required");
 assert.ok(primaryState, "BLEEPLAB_PRIMARY_STATE_DIR is required");
 assert.ok(secondaryState, "BLEEPLAB_SECONDARY_STATE_DIR is required");
 
@@ -34,6 +36,17 @@ try {
     }
   });
 
+  // The GitLab-compatible human control-plane API fails closed before the
+  // browser has a Shauth session. It returns an API response, not an HTML
+  // authorization redirect that a same-origin client could accidentally
+  // follow and misinterpret.
+  let response = await context.request.post("http://127.0.0.1:18929/api/v4/projects", {
+    data: { name: "unauthenticated-project" },
+    maxRedirects: 0,
+  });
+  assert.equal(response.status(), 401);
+  assert.deepEqual(await response.json(), { message: "401 Unauthorized" });
+
   // A direct Bleeplab entry traverses the real Shauth authorization-code,
   // PKCE, login, automatic managed-application consent, and token exchange.
   await page.goto("http://127.0.0.1:18929/ui/");
@@ -45,7 +58,46 @@ try {
   await page.getByText("admin@localhost.test", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Log out" }).waitFor();
   await assertSession(context, "http://127.0.0.1:18929", true);
+  response = await context.request.post("http://127.0.0.1:18929/api/v4/projects", {
+    data: { name: "admin-control-plane" },
+  });
+  assert.equal(response.status(), 201, `administrator control-plane request failed: ${await response.text()}`);
   assert.equal(loginVisits, 1, "direct entry did not establish exactly one Shauth login");
+
+  // Create a real Shauth developer account through the administrator UI, then
+  // use a separate browser profile to complete the full OpenID Connect flow
+  // and exercise the same Bleeplab control-plane API with the developer role.
+  await page.goto("http://localhost:48080/admin/users");
+  await page.locator("#new-username").fill("bleeplab-developer");
+  await page.locator("#new-email").fill("bleeplab-developer@localhost.test");
+  await page.locator("#new-password").fill(developerPassword);
+  await page.locator("#new-role").selectOption("developer");
+  await page.getByRole("button", { name: "Create local user" }).click();
+  await page.locator("#users").getByRole("link", { name: "bleeplab-developer" }).waitFor();
+
+  const developerContext = await browser.newContext();
+  try {
+    const developerPage = await developerContext.newPage();
+    await developerPage.goto("http://127.0.0.1:18929/ui/");
+    await developerPage.locator("#username").fill("bleeplab-developer");
+    await developerPage.locator("#password").fill(developerPassword);
+    await developerPage.getByRole("button", { name: "Sign in with password" }).click();
+    await developerPage.waitForURL("http://127.0.0.1:18929/ui/");
+    await assertSession(developerContext, "http://127.0.0.1:18929", true, {
+      name: "bleeplab-developer",
+      email: "bleeplab-developer@localhost.test",
+      role: "developer",
+    });
+    response = await developerContext.request.post("http://127.0.0.1:18929/api/v4/projects", {
+      data: { name: "developer-control-plane" },
+    });
+    assert.equal(response.status(), 201, `developer control-plane request failed: ${await response.text()}`);
+    await developerPage.getByRole("button", { name: "Log out" }).click();
+    await developerPage.waitForURL("http://127.0.0.1:18929/auth/signed-out");
+    await assertSession(developerContext, "http://127.0.0.1:18929", false);
+  } finally {
+    await developerContext.close();
+  }
 
   // The Shauth application catalog launches a second Bleeplab relying party.
   // The existing provider session grants it access without another login form.
@@ -59,7 +111,7 @@ try {
   // Front-Channel Logout ignores an untrusted issuer but revokes the exact
   // provider session when Shauth supplies its issuer and sid coordinates.
   const secondarySID = readOnlySessionSID(secondaryState);
-  let response = await context.request.get(
+  response = await context.request.get(
     `http://localhost:18930/auth/shauth/frontchannel-logout?iss=${encodeURIComponent("https://attacker.example")}&sid=${encodeURIComponent(secondarySID)}`,
   );
   assert.equal(response.status(), 200);
@@ -101,7 +153,11 @@ try {
   await browser.close();
 }
 
-async function assertSession(context, origin, authenticated) {
+async function assertSession(context, origin, authenticated, expected = {
+  name: "admin",
+  email: "admin@localhost.test",
+  role: "admin",
+}) {
   const response = await context.request.get(`${origin}/internal/session`, { maxRedirects: 0 });
   if (!authenticated) {
     assert.equal(response.status(), 302, `${origin} retained an authenticated session`);
@@ -113,9 +169,7 @@ async function assertSession(context, origin, authenticated) {
   const session = await response.json();
   assert.deepEqual(session, {
     authenticated: true,
-    name: "admin",
-    email: "admin@localhost.test",
-    role: "admin",
+    ...expected,
   });
 }
 
