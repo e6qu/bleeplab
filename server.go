@@ -108,6 +108,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /auth/shauth/callback", s.handleSHAUTHCallback)
 	s.mux.HandleFunc("GET /auth/signed-out", s.handleSHAUTHSignedOut)
 	s.mux.HandleFunc("POST /auth/logout", s.handleSHAUTHLogout)
+	s.mux.HandleFunc("GET /auth/shauth/frontchannel-logout", s.handleSHAUTHFrontChannelLogout)
 	s.mux.HandleFunc("POST /auth/shauth/backchannel-logout", s.handleSHAUTHBackChannelLogout)
 	// Runner-facing API (gitlab-runner polls these).
 	s.mux.HandleFunc("POST /api/v4/runners/verify", s.handleRunnerVerify)

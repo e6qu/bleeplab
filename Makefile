@@ -1,4 +1,4 @@
-.PHONY: build test web-build runner-sockerless-test runner-image
+.PHONY: build test web-build shauth-sso-test runner-sockerless-test runner-image
 
 build: web-build
 	CGO_ENABLED=0 go build -o bleeplab-server ./cmd
@@ -9,6 +9,10 @@ web-build:
 
 test:
 	go test -tags noui -count=1 -timeout 5m ./...
+
+shauth-sso-test: build
+	@test -n "$(SHAUTH_SOURCE_DIR)" || { echo "SHAUTH_SOURCE_DIR must point to the pinned Shauth checkout"; exit 1; }
+	bash test/run-shauth-sso.sh
 
 runner-sockerless-test:
 	@test -n "$(SOCKERLESS_ROOT)" || { echo "SOCKERLESS_ROOT must point to a Sockerless checkout"; exit 1; }

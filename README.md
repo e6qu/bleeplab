@@ -48,14 +48,17 @@ Register these exact Shauth client coordinates:
 ```text
 redirect_uri:                    https://bleeplab.dev.e6qu.dev/auth/shauth/callback
 post_logout_redirect_uri:        https://bleeplab.dev.e6qu.dev/auth/signed-out
+frontchannel_logout_uri:         https://bleeplab.dev.e6qu.dev/auth/shauth/frontchannel-logout
 backchannel_logout_uri:          https://bleeplab.dev.e6qu.dev/auth/shauth/backchannel-logout
+frontchannel_logout_session_required: true
 backchannel_logout_session_required: true
 ```
 
 Bleeplab treats `BLEEPLAB_SHAUTH_ISSUER` as an exact OpenID Connect issuer
 identifier, including a trailing slash when the provider publishes one. It uses
-discovery, authorization code + PKCE, nonce and state checks, and
-accepts only Shauth `developer` or `admin` roles. The browser receives an opaque,
+discovery, authorization code + PKCE, `client_secret_post`, nonce and state
+checks, and accepts only Shauth `developer` or `admin` roles backed by a
+non-empty, verified email address. The browser receives an opaque,
 HttpOnly session identifier; verified issuer, subject, `sid`, identity claims,
 expiry, and the ID token remain server-side in `BLEEPLAB_SHAUTH_STATE_DIR`.
 Every replica must mount that coordinate from the same durable filesystem (for
@@ -64,13 +67,20 @@ configured without it. Session reads and signed logout-token replay
 claims are shared across replicas and survive process replacement. The dashboard
 displays the user's name, email, avatar, and logout control. Logout uses the
 provider's discovered RP-Initiated Logout endpoint with an ID-token hint and the
-same-origin `/auth/signed-out` landing page, and signed OpenID Connect
-Back-Channel Logout atomically revokes matching local sessions by `sid` (or all
-sessions for `sub` when no `sid` is supplied). The signed-out page clears local
+same-origin `/auth/signed-out` landing page. Local session state is revoked
+before any provider discovery or logout network work, so an unavailable
+provider cannot leave Bleeplab authenticated. OpenID Connect Front-Channel
+Logout revokes the exact issuer and `sid`, and signed Back-Channel Logout
+atomically revokes matching local sessions by `sid` (or all sessions for `sub`
+when no `sid` is supplied). The signed-out page clears local
 identity state and never starts a new sign-in unless the user chooses its sign-in
 link. The post-logout URI is derived from `BLEEPLAB_PUBLIC_URL`, so it cannot
 drift to another client origin. An omitted configuration preserves the standalone
 mode; a partial or non-HTTPS configuration fails startup.
+
+`BLEEPLAB_ALLOW_INSECURE_OIDC=true` permits HTTP only for loopback hostnames.
+It exists solely for repository-local integration tests; non-loopback issuer
+and application coordinates remain HTTPS-only.
 
 ## What it implements
 
@@ -158,6 +168,10 @@ cd web && bun install --frozen-lockfile && bun run dev
 # Go unit tests (in-process, in-memory storage — no Docker needed).
 make test
 
+# Real Shauth SSO acceptance: PostgreSQL, Ory Hydra, the pinned Shauth source,
+# two Bleeplab relying parties, and Chromium.
+SHAUTH_SOURCE_DIR=/path/to/shauth make shauth-sso-test
+
 # Full docker-executor harness: a real gitlab-runner registers against
 # Bleeplab and dispatches jobs through a Sockerless backend + cloud simulator.
 # The source checkout is a build context: no Bleeplab source dependency exists.
@@ -165,6 +179,14 @@ SOCKERLESS_ROOT=/path/to/sockerless make runner-sockerless-test
 ```
 
 The harness ([`test/runner/sockerless/run-integration.sh`](test/runner/sockerless/run-integration.sh)) exercises the whole runner-as-cloud-task data plane end to end: clone + compile, artifacts across stages, and `services:` sidecars over the network pod. Set `BLEEPLAB_HOLD=1` to hold the stack (Bleeplab `:8929`, backend `:3375`) for inspection on failure. It uses `docker buildx build --load` because the runner image must be available to the local Docker API.
+
+The Shauth acceptance harness is owned by this repository and pins the reviewed
+Shauth commit. It proves direct entry, catalog launch, verified identity,
+single-login SSO across two relying parties, strict Front-Channel Logout,
+signed Back-Channel Logout, RP-Initiated Logout returning to Bleeplab, and
+fail-closed access after the shared session ends. It reuses the test-only
+Playwright installation locked by that Shauth checkout; Bleeplab has no
+oauth2-proxy or other authentication proxy dependency.
 
 ## Source layout
 

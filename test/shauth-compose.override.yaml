@@ -1,0 +1,26 @@
+services:
+  postgres:
+    ports: !reset []
+  shauth:
+    ports: !override
+      - "127.0.0.1:48080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  hydra:
+    ports: !override
+      - "127.0.0.1:49444:4444"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  backchannel-forwarder:
+    image: gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
+    network_mode: "service:hydra"
+    depends_on:
+      hydra:
+        condition: service_started
+    user: "65532:65532"
+    volumes:
+      - "${BLEEPLAB_BACKCHANNEL_FORWARDER}:/backchannel-forwarder:ro"
+    entrypoint: ["/backchannel-forwarder"]
+    command:
+      - "127.0.0.1:18929=host.docker.internal:18929"
+      - "127.0.0.1:18930=host.docker.internal:18930"
