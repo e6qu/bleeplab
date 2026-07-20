@@ -5,6 +5,7 @@ WORKDIR /src
 # The product repository supplies Bleeplab; the named sockerless BuildKit
 # context supplies the real simulator and backend implementations under test.
 COPY --from=sockerless simulators/realexec/ /realexec/
+COPY --from=sockerless simulators/ui-auth/ /ui-auth/
 COPY --from=sockerless simulators/aws/ /sim-aws/
 RUN cd /sim-aws && GOWORK=off go build -tags noui -o /out/simulator-aws .
 COPY --from=sockerless simulators/gcp/ /sim-gcp/

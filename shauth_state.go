@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -104,6 +105,42 @@ func (store *shauthStateStore) deleteSession(id string) error {
 		return fmt.Errorf("delete Shauth session: %w", err)
 	}
 	if err == nil {
+		if err := syncDirectory(store.sessionsDir); err != nil {
+			return fmt.Errorf("sync Shauth session deletion: %w", err)
+		}
+	}
+	return nil
+}
+
+func (store *shauthStateStore) deleteSessions(issuer, clientID, sid, subject string) error {
+	entries, err := os.ReadDir(store.sessionsDir)
+	if err != nil {
+		return fmt.Errorf("list Shauth sessions: %w", err)
+	}
+	deleted := false
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" || strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
+		path := filepath.Join(store.sessionsDir, entry.Name())
+		var session shauthSession
+		if err := readFileJSON(path, &session); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("read Shauth session: %w", err)
+		}
+		matchesSID := sid != "" && session.SID == sid
+		matchesSubject := sid == "" && subject != "" && session.Subject == subject
+		if session.Issuer != issuer || session.ClientID != clientID || (!matchesSID && !matchesSubject) {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("delete Shauth session: %w", err)
+		}
+		deleted = true
+	}
+	if deleted {
 		if err := syncDirectory(store.sessionsDir); err != nil {
 			return fmt.Errorf("sync Shauth session deletion: %w", err)
 		}

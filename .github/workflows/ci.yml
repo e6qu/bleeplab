@@ -30,6 +30,26 @@ jobs:
       - run: bun run build
         working-directory: web
 
+  shauth-sso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.0
+        with:
+          repository: e6qu/shauth
+          ref: 8b5d7d34805282c797172c15efd768fba44d033c
+          path: shauth
+      - uses: actions/setup-go@v6.5.0
+        with:
+          go-version-file: go.mod
+      - uses: oven-sh/setup-bun@v2.2.0
+      - run: npm ci
+        working-directory: shauth
+      - run: npx playwright install --with-deps chromium
+        working-directory: shauth
+      - run: SHAUTH_SOURCE_DIR="$GITHUB_WORKSPACE/shauth" make shauth-sso-test
+
   runner-sockerless:
     runs-on: ubuntu-latest
     timeout-minutes: 30
