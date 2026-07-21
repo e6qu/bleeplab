@@ -6,10 +6,12 @@ COPY web/src ./src
 RUN bun install --frozen-lockfile && bun run build
 
 FROM golang:1.25-alpine AS builder
+ARG APPLICATION_RELEASE_REVISION
 WORKDIR /src
 COPY . .
 COPY --from=ui-builder /src/web/dist/ ./dist/
-RUN CGO_ENABLED=0 go build -o /out/bleeplab ./cmd
+RUN printf '%s' "$APPLICATION_RELEASE_REVISION" | grep -Eq '^([0-9a-f]{12,64}|sha256:[0-9a-f]{64})$' && \
+    CGO_ENABLED=0 go build -ldflags "-X github.com/e6qu/bleeplab.builtReleaseRevision=$APPLICATION_RELEASE_REVISION" -o /out/bleeplab ./cmd
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=builder /out/bleeplab /usr/local/bin/bleeplab

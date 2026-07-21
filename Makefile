@@ -1,4 +1,4 @@
-.PHONY: build test web-build shauth-sso-test runner-sockerless-test runner-image
+.PHONY: build check-workflow-timeouts test web-build shauth-sso-test runner-sockerless-test runner-image
 
 build: web-build
 	CGO_ENABLED=0 go build -o bleeplab-server ./cmd
@@ -11,6 +11,9 @@ web-build:
 
 test:
 	go test -tags noui -count=1 -timeout 5m ./...
+
+check-workflow-timeouts:
+	bash test/test-workflow-timeouts.sh
 
 shauth-sso-test: build
 	@test -n "$(SHAUTH_SOURCE_DIR)" || { echo "SHAUTH_SOURCE_DIR must point to the pinned Shauth checkout"; exit 1; }

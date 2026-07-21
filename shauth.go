@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,12 +24,19 @@ const shauthTransactionCookie = "bleeplab_shauth_tx"
 const shauthSessionCookie = "bleeplab_shauth_session"
 const backChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 const shauthMaximumSessionLifetime = 8 * time.Hour
+const shauthLogoutBridgePath = "/auth/shauth/logout/complete"
+const shauthProviderLogoutCompletionPath = "/oauth/logout/complete"
 
 //go:embed auth/signed-out.html
 var shauthSignedOutHTML string
 
 //go:embed auth/signed-out.css
 var shauthSignedOutCSS string
+
+//go:embed auth/validation.html
+var shauthValidationHTML string
+
+var shauthValidationPage = template.Must(template.New("shauth-validation").Parse(shauthValidationHTML))
 
 type shauthConfig struct {
 	issuer, clientID, clientSecret, publicURL, stateDir string
@@ -89,6 +97,22 @@ func (c shauthConfig) signedOutURL() string {
 	return c.publicURL + "/auth/signed-out"
 }
 
+func (c shauthConfig) logoutBridgeURL() string {
+	return c.publicURL + shauthLogoutBridgePath
+}
+
+func (c shauthConfig) providerLogoutCompletionURL() (string, error) {
+	issuer, err := url.Parse(c.issuer)
+	if err != nil || !c.validOIDCURL(issuer) || issuer.RawQuery != "" || issuer.Fragment != "" {
+		return "", fmt.Errorf("Shauth issuer must be an absolute secure URL")
+	}
+	issuer.Path = shauthProviderLogoutCompletionPath
+	issuer.RawPath = ""
+	issuer.RawQuery = ""
+	issuer.Fragment = ""
+	return issuer.String(), nil
+}
+
 type shauthTransaction struct {
 	State    string `json:"s"`
 	Nonce    string `json:"n"`
@@ -115,7 +139,10 @@ type shauthSession struct {
 }
 
 type shauthProviderMetadata struct {
-	EndSessionEndpoint string `json:"end_session_endpoint"`
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	JWKSURI               string `json:"jwks_uri"`
+	EndSessionEndpoint    string `json:"end_session_endpoint"`
 }
 
 type shauthLogoutClaims struct {
@@ -238,6 +265,58 @@ func shauthOAuthConfig(provider *oidc.Provider, clientID, clientSecret, redirect
 	return oauth2.Config{ClientID: clientID, ClientSecret: clientSecret, Endpoint: endpoint, RedirectURL: redirectURL, Scopes: scopes}
 }
 
+func (c shauthConfig) issuerEndpoint(raw string) (*url.URL, error) {
+	issuer, err := url.Parse(c.issuer)
+	if err != nil {
+		return nil, err
+	}
+	endpoint, err := url.Parse(raw)
+	if err != nil || !c.validOIDCURL(endpoint) || endpoint.Fragment != "" || !strings.EqualFold(endpoint.Scheme, issuer.Scheme) || !strings.EqualFold(endpoint.Host, issuer.Host) {
+		return nil, fmt.Errorf("endpoint origin differs from issuer")
+	}
+	return endpoint, nil
+}
+
+func (c shauthConfig) providerMetadata(provider *oidc.Provider) (shauthProviderMetadata, error) {
+	var metadata shauthProviderMetadata
+	if err := provider.Claims(&metadata); err != nil {
+		return shauthProviderMetadata{}, err
+	}
+	for _, endpoint := range []string{metadata.AuthorizationEndpoint, metadata.TokenEndpoint, metadata.JWKSURI, metadata.EndSessionEndpoint} {
+		if endpoint == "" {
+			return shauthProviderMetadata{}, fmt.Errorf("Shauth discovery omitted a required endpoint")
+		}
+		if _, err := c.issuerEndpoint(endpoint); err != nil {
+			return shauthProviderMetadata{}, err
+		}
+	}
+	return metadata, nil
+}
+
+func (c shauthConfig) validationContentSecurityPolicy() string {
+	issuer, err := c.issuerEndpoint(c.issuer)
+	if err != nil {
+		return "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	}
+	return "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'self' " + issuer.Scheme + "://" + issuer.Host + "; frame-ancestors 'none'"
+}
+
+func (c shauthConfig) validLogoutRequest(r *http.Request) bool {
+	if r.Header.Get("Origin") != c.publicURL {
+		return false
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+		return false
+	}
+	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" && mode != "navigate" {
+		return false
+	}
+	if destination := r.Header.Get("Sec-Fetch-Dest"); destination != "" && destination != "document" {
+		return false
+	}
+	return true
+}
+
 func (s *Server) handleSHAUTHLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.shauth.enabled() {
 		http.Error(w, "Shauth is not configured", http.StatusServiceUnavailable)
@@ -246,6 +325,10 @@ func (s *Server) handleSHAUTHLogin(w http.ResponseWriter, r *http.Request) {
 	provider, err := oidc.NewProvider(r.Context(), s.shauth.issuer)
 	if err != nil {
 		http.Error(w, "Shauth discovery failed", http.StatusBadGateway)
+		return
+	}
+	if _, err := s.shauth.providerMetadata(provider); err != nil {
+		http.Error(w, "Shauth discovery advertised invalid endpoints", http.StatusBadGateway)
 		return
 	}
 	state, err := randomSHAUTHValue()
@@ -288,6 +371,10 @@ func (s *Server) handleSHAUTHCallback(w http.ResponseWriter, r *http.Request) {
 	provider, err := oidc.NewProvider(r.Context(), s.shauth.issuer)
 	if err != nil {
 		http.Error(w, "Shauth discovery failed", http.StatusBadGateway)
+		return
+	}
+	if _, err := s.shauth.providerMetadata(provider); err != nil {
+		http.Error(w, "Shauth discovery advertised invalid endpoints", http.StatusBadGateway)
 		return
 	}
 	cfg := shauthOAuthConfig(provider, s.shauth.clientID, s.shauth.clientSecret, s.shauth.publicURL+"/auth/shauth/callback", nil)
@@ -341,11 +428,7 @@ func (s *Server) handleSHAUTHLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Shauth is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	if origin := r.Header.Get("Origin"); origin != s.shauth.publicURL {
-		http.Error(w, "cross-origin logout denied", http.StatusForbidden)
-		return
-	}
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+	if !s.shauth.validLogoutRequest(r) {
 		http.Error(w, "cross-origin logout denied", http.StatusForbidden)
 		return
 	}
@@ -359,24 +442,38 @@ func (s *Server) handleSHAUTHLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Shauth discovery failed", http.StatusBadGateway)
 		return
 	}
-	var metadata shauthProviderMetadata
-	if err := provider.Claims(&metadata); err != nil || metadata.EndSessionEndpoint == "" {
-		http.Error(w, "Shauth does not advertise RP-Initiated Logout", http.StatusBadGateway)
+	metadata, err := s.shauth.providerMetadata(provider)
+	if err != nil {
+		http.Error(w, "Shauth discovery advertised invalid endpoints", http.StatusBadGateway)
 		return
 	}
-	endpoint, err := s.shauth.logoutEndpoint(metadata.EndSessionEndpoint)
+	idToken := ""
+	if ok {
+		idToken = session.IDToken
+	}
+	endpoint, err := s.shauth.rpInitiatedLogoutURL(metadata.EndSessionEndpoint, idToken)
 	if err != nil {
 		http.Error(w, "Shauth advertised an invalid logout endpoint", http.StatusBadGateway)
 		return
 	}
-	query := endpoint.Query()
-	if ok {
-		query.Set("id_token_hint", session.IDToken)
-	}
-	query.Set("client_id", s.shauth.clientID)
-	query.Set("post_logout_redirect_uri", s.shauth.signedOutURL())
-	endpoint.RawQuery = query.Encode()
 	http.Redirect(w, r, endpoint.String(), http.StatusFound)
+}
+
+func (s *Server) handleSHAUTHLogoutBridge(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if !s.shauth.enabled() {
+		http.Error(w, "Shauth is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	completionURL, err := s.shauth.providerLogoutCompletionURL()
+	if err != nil {
+		http.Error(w, "Shauth logout completion endpoint is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	http.Redirect(w, r, completionURL, http.StatusSeeOther)
 }
 
 func (s *Server) clearSHAUTHSessionForLogout(w http.ResponseWriter, r *http.Request) (shauthSession, bool, error) {
@@ -395,14 +492,27 @@ func (s *Server) clearSHAUTHSessionForLogout(w http.ResponseWriter, r *http.Requ
 }
 
 func (c shauthConfig) logoutEndpoint(raw string) (*url.URL, error) {
-	issuer, err := url.Parse(c.issuer)
+	endpoint, err := c.issuerEndpoint(raw)
+	if err != nil {
+		return nil, fmt.Errorf("logout endpoint origin differs from issuer")
+	}
+	return endpoint, nil
+}
+
+func (c shauthConfig) rpInitiatedLogoutURL(rawEndpoint, idToken string) (*url.URL, error) {
+	endpoint, err := c.logoutEndpoint(rawEndpoint)
 	if err != nil {
 		return nil, err
 	}
-	endpoint, err := url.Parse(raw)
-	if err != nil || !c.validOIDCURL(endpoint) || endpoint.Fragment != "" || !strings.EqualFold(endpoint.Scheme, issuer.Scheme) || !strings.EqualFold(endpoint.Host, issuer.Host) {
-		return nil, fmt.Errorf("logout endpoint origin differs from issuer")
+	query := endpoint.Query()
+	if idToken != "" {
+		query.Set("id_token_hint", idToken)
+	} else {
+		query.Del("id_token_hint")
 	}
+	query.Set("client_id", c.clientID)
+	query.Set("post_logout_redirect_uri", c.logoutBridgeURL())
+	endpoint.RawQuery = query.Encode()
 	return endpoint, nil
 }
 
@@ -451,6 +561,43 @@ func (s *Server) handleSHAUTHSignedOut(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(shauthSignedOutHTML))
 }
 
+func (s *Server) handleSHAUTHValidation(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Security-Policy", s.shauth.validationContentSecurityPolicy())
+	w.Header().Set("Referrer-Policy", "same-origin")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
+	if !s.shauth.enabled() {
+		http.Redirect(w, r, "/auth/signed-out", http.StatusSeeOther)
+		return
+	}
+	_, session, ok, err := s.shauthSessionForRequest(r)
+	if err != nil {
+		http.Error(w, "Shauth session state is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !ok {
+		http.Redirect(w, r, "/auth/signed-out", http.StatusSeeOther)
+		return
+	}
+	username := strings.TrimSpace(session.Name)
+	email := strings.TrimSpace(session.Email)
+	role := strings.TrimSpace(session.Role)
+	if username == "" || email == "" || (role != "admin" && role != "developer") || !isImmutableReleaseRevision(s.releaseRevision) {
+		http.Error(w, "authenticated validation metadata is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := shauthValidationPage.Execute(w, map[string]string{
+		"Username": username,
+		"Email":    email,
+		"Role":     role,
+		"Revision": s.releaseRevision,
+	}); err != nil {
+		s.logger.Error().Err(err).Msg("render Shauth validation page")
+	}
+}
+
 func handleSHAUTHSignedOutStyles(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=3600")
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
@@ -482,6 +629,10 @@ func (s *Server) handleSHAUTHBackChannelLogout(w http.ResponseWriter, r *http.Re
 	provider, err := oidc.NewProvider(r.Context(), s.shauth.issuer)
 	if err != nil {
 		http.Error(w, "Shauth discovery failed", http.StatusBadGateway)
+		return
+	}
+	if _, err := s.shauth.providerMetadata(provider); err != nil {
+		http.Error(w, "Shauth discovery advertised invalid endpoints", http.StatusBadGateway)
 		return
 	}
 	token, err := provider.Verifier(&oidc.Config{ClientID: s.shauth.clientID}).Verify(r.Context(), raw)

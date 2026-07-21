@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Bleeplab account validation</title>
+    <link rel="stylesheet" href="/auth/signed-out.css">
+  </head>
+  <body>
+    <main class="auth-shell" id="main-content">
+      <section class="auth-card" aria-labelledby="validation-title">
+        <span class="brand" aria-label="Bleeplab">Bleeplab</span>
+        <p class="eyebrow">Authenticated application session</p>
+        <h1 id="validation-title">Bleeplab account</h1>
+        <dl class="validation-details" aria-label="Current account details">
+          <div><dt>Username</dt><dd data-testid="validation-username">{{.Username}}</dd></div>
+          <div><dt>Email</dt><dd data-testid="validation-email">{{.Email}}</dd></div>
+          <div><dt>Role</dt><dd data-testid="validation-role">{{.Role}}</dd></div>
+          <div><dt>Release</dt><dd data-testid="validation-release">{{.Revision}}</dd></div>
+        </dl>
+        <form action="/auth/logout" method="post">
+          <button class="primary-action" type="submit">Sign out</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

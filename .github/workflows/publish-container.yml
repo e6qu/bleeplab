@@ -20,6 +20,7 @@ jobs:
   metadata:
     name: Container tag
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       tag: ${{ steps.tag.outputs.value }}
       published_at: ${{ steps.published_at.outputs.value }}
@@ -37,7 +38,7 @@ jobs:
     name: Bleeplab images (${{ matrix.arch.suffix }})
     needs: metadata
     runs-on: ${{ matrix.arch.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +63,8 @@ jobs:
           push: true
           provenance: false
           tags: ${{ env.IMAGE }}:${{ needs.metadata.outputs.tag }}-${{ matrix.arch.suffix }}
+          build-args: |
+            APPLICATION_RELEASE_REVISION=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

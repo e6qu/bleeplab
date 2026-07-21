@@ -7,8 +7,8 @@ import (
 	"flag"
 	"os"
 
-	"github.com/rs/zerolog"
 	"github.com/e6qu/bleeplab"
+	"github.com/rs/zerolog"
 )
 
 func main() {

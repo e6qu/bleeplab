@@ -6,12 +6,22 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("APPLICATION_RELEASE_REVISION") == "" {
+		if err := os.Setenv("APPLICATION_RELEASE_REVISION", "0123456789ab"); err != nil {
+			panic(err)
+		}
+	}
+	os.Exit(m.Run())
+}
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()

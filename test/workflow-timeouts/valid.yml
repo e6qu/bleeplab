@@ -1,0 +1,15 @@
+name: valid
+on: pull_request
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps: []
+  "quoted-job":
+    runs-on: ubuntu-latest
+    "timeout-minutes": 1 # Quoted keys remain ordinary YAML mappings.
+    steps: []
+  'single-quoted-job':
+    runs-on: ubuntu-latest
+    'timeout-minutes': 9
+    steps: []

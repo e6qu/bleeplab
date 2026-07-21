@@ -67,6 +67,12 @@ func TestSHAUTHConfigRequiresCompleteSecureCoordinates(t *testing.T) {
 	if got := config.signedOutURL(); got != "https://bleeplab.dev.e6qu.dev/auth/signed-out" {
 		t.Fatalf("same-origin signed-out URL = %q", got)
 	}
+	if got := config.logoutBridgeURL(); got != "https://bleeplab.dev.e6qu.dev/auth/shauth/logout/complete" {
+		t.Fatalf("same-origin logout bridge URL = %q", got)
+	}
+	if got, err := config.providerLogoutCompletionURL(); err != nil || got != "https://auth.dev.e6qu.dev/oauth/logout/complete" {
+		t.Fatalf("provider logout completion URL = %q, %v", got, err)
+	}
 	loopback := shauthConfig{issuer: "http://localhost:4444", clientID: "id", clientSecret: "secret", publicURL: "http://bleeplab.localhost:8929", stateDir: "/state", allowInsecure: true}
 	if err := loopback.validate(); err != nil {
 		t.Fatalf("explicit loopback development coordinates: %v", err)
@@ -74,6 +80,39 @@ func TestSHAUTHConfigRequiresCompleteSecureCoordinates(t *testing.T) {
 	loopback.issuer = "http://auth.example.test"
 	if err := loopback.validate(); err == nil {
 		t.Fatal("non-loopback insecure issuer was accepted")
+	}
+}
+
+func TestSHAUTHLogoutBridgeIgnoresInputAndRedirectsOnlyToIssuerCompletion(t *testing.T) {
+	configureSHAUTHTest(t, "https://auth.dev.e6qu.dev/tenant/")
+	s := NewServer(":0", zerolog.Nop())
+
+	for _, target := range []string{
+		shauthLogoutBridgePath,
+		shauthLogoutBridgePath + "?target=https%3A%2F%2Fattacker.example&state=attacker&token=secret",
+		shauthLogoutBridgePath + "?post_logout_redirect_uri=https%3A%2F%2Fattacker.example",
+	} {
+		for attempt := 0; attempt < 2; attempt++ {
+			request := httptest.NewRequest(http.MethodGet, target, nil)
+			response := httptest.NewRecorder()
+			s.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "https://auth.dev.e6qu.dev/oauth/logout/complete" {
+				t.Fatalf("logout bridge %q replay %d = %d %q", target, attempt, response.Code, response.Header().Get("Location"))
+			}
+			if response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Referrer-Policy") != "no-referrer" || response.Header().Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatalf("logout bridge security headers: cache=%q referrer=%q content-type-options=%q", response.Header().Get("Cache-Control"), response.Header().Get("Referrer-Policy"), response.Header().Get("X-Content-Type-Options"))
+			}
+		}
+	}
+}
+
+func TestSHAUTHLogoutBridgeFailsClosedWithoutProvider(t *testing.T) {
+	s := NewServer(":0", zerolog.Nop())
+	request := httptest.NewRequest(http.MethodGet, shauthLogoutBridgePath+"?target=https%3A%2F%2Fattacker.example", nil)
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable || response.Header().Get("Location") != "" {
+		t.Fatalf("unconfigured logout bridge = %d %q", response.Code, response.Header().Get("Location"))
 	}
 }
 
@@ -209,20 +248,148 @@ func TestSHAUTHSignedOutClearsLocalStateWithoutStartingLogin(t *testing.T) {
 	}
 }
 
-func TestSHAUTHLogoutRejectsCrossOriginPost(t *testing.T) {
+func TestSHAUTHValidationRequiresRealSessionCookieAndReportsExactContract(t *testing.T) {
 	configureSHAUTHTest(t, "https://auth.dev.e6qu.dev")
+	t.Setenv("APPLICATION_RELEASE_REVISION", "sha256:"+strings.Repeat("a", 64))
 	s := NewServer(":0", zerolog.Nop())
-	request := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
-	request.Header.Set("Origin", "https://attacker.example")
+
+	for name, configure := range map[string]func(*http.Request){
+		"anonymous": func(*http.Request) {},
+		"basic": func(request *http.Request) {
+			request.SetBasicAuth("shauth-validator", "not-an-application-credential")
+		},
+		"bearer": func(request *http.Request) {
+			request.Header.Set("Authorization", "Bearer not-an-application-credential")
+		},
+		"query": func(request *http.Request) {
+			request.URL.RawQuery = "token=not-an-application-credential&username=shauth-validator"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/auth/validation", nil)
+			configure(request)
+			response := httptest.NewRecorder()
+			s.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/auth/signed-out" {
+				t.Fatalf("credential-shaped request = %d %q, want app-local signed-out redirect", response.Code, response.Header().Get("Location"))
+			}
+			if response.Header().Get("Cache-Control") != "no-store" {
+				t.Fatalf("credential-shaped response cache policy = %q", response.Header().Get("Cache-Control"))
+			}
+		})
+	}
+
+	sessionID := createTestSession(t, s, func(session *shauthSession) {
+		session.Name = `ada<script>`
+		session.Email = `ada+validation@example.com`
+		session.Role = "admin"
+	})
+	request := httptest.NewRequest(http.MethodGet, "/auth/validation", nil)
+	request.AddCookie(&http.Cookie{Name: shauthSessionCookie, Value: sessionID})
 	response := httptest.NewRecorder()
 	s.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("cross-origin logout = %d, want 403", response.Code)
+	if response.Code != http.StatusOK {
+		t.Fatalf("authenticated validation = %d: %s", response.Code, response.Body.String())
+	}
+	for _, contract := range []string{
+		`<main class="auth-shell" id="main-content">`,
+		`<span class="brand" aria-label="Bleeplab">Bleeplab</span>`,
+		`data-testid="validation-username">ada&lt;script&gt;</dd>`,
+		`data-testid="validation-email">ada&#43;validation@example.com</dd>`,
+		`data-testid="validation-role">admin</dd>`,
+		`data-testid="validation-release">sha256:` + strings.Repeat("a", 64) + `</dd>`,
+		`<form action="/auth/logout" method="post">`,
+		`<button class="primary-action" type="submit">Sign out</button>`,
+	} {
+		if !strings.Contains(response.Body.String(), contract) {
+			t.Fatalf("validation page omitted %q: %s", contract, response.Body.String())
+		}
+	}
+	if strings.Contains(response.Body.String(), `<script>`) ||
+		response.Header().Get("Cache-Control") != "no-store" ||
+		response.Header().Get("Referrer-Policy") != "same-origin" ||
+		response.Header().Get("Content-Security-Policy") != "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'self' https://auth.dev.e6qu.dev; frame-ancestors 'none'" {
+		t.Fatalf("validation response did not enforce output/security contract: cache=%q referrer=%q CSP=%q body=%s", response.Header().Get("Cache-Control"), response.Header().Get("Referrer-Policy"), response.Header().Get("Content-Security-Policy"), response.Body.String())
+	}
+}
+
+func TestSHAUTHValidationWithoutProviderStillFailsClosedLocally(t *testing.T) {
+	s := NewServer(":0", zerolog.Nop())
+	request := httptest.NewRequest(http.MethodGet, "/auth/validation", nil)
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/auth/signed-out" {
+		t.Fatalf("standalone validation = %d %q", response.Code, response.Header().Get("Location"))
+	}
+}
+
+func TestSHAUTHLogoutRequiresExactSameOriginNavigation(t *testing.T) {
+	config := shauthConfig{publicURL: "https://bleeplab.dev.e6qu.dev"}
+	valid := []http.Header{
+		{"Origin": {config.publicURL}},
+		{
+			"Origin":         {config.publicURL},
+			"Sec-Fetch-Site": {"same-origin"},
+			"Sec-Fetch-Mode": {"navigate"},
+			"Sec-Fetch-Dest": {"document"},
+		},
+	}
+	for index, headers := range valid {
+		request := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+		request.Header = headers
+		if !config.validLogoutRequest(request) {
+			t.Errorf("valid same-origin logout request %d was rejected", index)
+		}
+	}
+
+	invalid := map[string]http.Header{
+		"missing origin": {},
+		"opaque origin": {
+			"Origin":         {"null"},
+			"Sec-Fetch-Site": {"same-origin"},
+			"Sec-Fetch-Mode": {"navigate"},
+			"Sec-Fetch-Dest": {"document"},
+		},
+		"cross origin": {
+			"Origin": {"https://attacker.example"},
+		},
+		"cross site": {
+			"Origin":         {config.publicURL},
+			"Sec-Fetch-Site": {"cross-site"},
+		},
+		"same site is not same origin": {
+			"Origin":         {config.publicURL},
+			"Sec-Fetch-Site": {"same-site"},
+		},
+		"browser initiated top-level request without an application document": {
+			"Origin":         {config.publicURL},
+			"Sec-Fetch-Site": {"none"},
+		},
+		"non-navigation mode": {
+			"Origin":         {config.publicURL},
+			"Sec-Fetch-Site": {"same-origin"},
+			"Sec-Fetch-Mode": {"cors"},
+		},
+		"non-document destination": {
+			"Origin":         {config.publicURL},
+			"Sec-Fetch-Site": {"same-origin"},
+			"Sec-Fetch-Mode": {"navigate"},
+			"Sec-Fetch-Dest": {"iframe"},
+		},
+	}
+	for name, headers := range invalid {
+		t.Run(name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+			request.Header = headers
+			if config.validLogoutRequest(request) {
+				t.Fatal("untrusted logout request was accepted")
+			}
+		})
 	}
 }
 
 func TestSHAUTHLogoutEndpointRequiresExactIssuerOrigin(t *testing.T) {
-	config := shauthConfig{issuer: "https://auth.dev.e6qu.dev", allowInsecure: false}
+	config := shauthConfig{issuer: "https://auth.dev.e6qu.dev", clientID: "bleeplab-dev", publicURL: "https://bleeplab.dev.e6qu.dev", allowInsecure: false}
 	endpoint, err := config.logoutEndpoint("https://auth.dev.e6qu.dev/oauth2/sessions/logout")
 	if err != nil || endpoint.String() != "https://auth.dev.e6qu.dev/oauth2/sessions/logout" {
 		t.Fatalf("valid logout endpoint = %v, %v", endpoint, err)
@@ -231,6 +398,25 @@ func TestSHAUTHLogoutEndpointRequiresExactIssuerOrigin(t *testing.T) {
 		if _, err := config.logoutEndpoint(value); err == nil {
 			t.Errorf("untrusted logout endpoint %q was accepted", value)
 		}
+	}
+	if got := config.validationContentSecurityPolicy(); got != "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'self' https://auth.dev.e6qu.dev; frame-ancestors 'none'" {
+		t.Fatalf("validation CSP = %q", got)
+	}
+	endpoint, err = config.rpInitiatedLogoutURL("https://auth.dev.e6qu.dev/oauth2/sessions/logout?id_token_hint=attacker&client_id=attacker&post_logout_redirect_uri=https%3A%2F%2Fattacker.example", "verified.id.token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := endpoint.Query()
+	if endpoint.Scheme != "https" || endpoint.Host != "auth.dev.e6qu.dev" || endpoint.Path != "/oauth2/sessions/logout" ||
+		query.Get("id_token_hint") != "verified.id.token" || query.Get("client_id") != "bleeplab-dev" || query.Get("post_logout_redirect_uri") != "https://bleeplab.dev.e6qu.dev/auth/shauth/logout/complete" {
+		t.Fatalf("RP-Initiated Logout endpoint = %q", endpoint.String())
+	}
+	withoutSession, err := config.rpInitiatedLogoutURL("https://auth.dev.e6qu.dev/oauth2/sessions/logout?id_token_hint=attacker", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutSession.Query().Has("id_token_hint") || withoutSession.Query().Get("client_id") != "bleeplab-dev" || withoutSession.Query().Get("post_logout_redirect_uri") != config.logoutBridgeURL() {
+		t.Fatalf("sessionless RP-Initiated Logout endpoint = %q", withoutSession.String())
 	}
 }
 
