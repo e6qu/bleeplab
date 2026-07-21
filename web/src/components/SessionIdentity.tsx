@@ -2,7 +2,11 @@ import type { Session } from "../types.js";
 
 export function SessionIdentity({ session }: { session: Session }) {
   return (
-    <div className="flex items-center justify-between gap-2 text-xs" aria-label="Signed-in user">
+    <div
+      className="flex items-center justify-between gap-2 text-xs"
+      aria-label="Signed-in user"
+      data-shauth-user={session.name}
+    >
       <span className="flex min-w-0 items-center gap-2">
         {session.picture ? (
           <img
@@ -21,7 +25,7 @@ export function SessionIdentity({ session }: { session: Session }) {
           </span>
         )}
         <span className="min-w-0">
-          <span className="block truncate font-medium">{session.name || "Shauth user"}</span>
+          <span className="block truncate font-medium">{session.name}</span>
           {session.email ? (
             <span className="block truncate" style={{ color: "var(--color-fg-subtle)" }}>
               {session.email}
@@ -34,6 +38,7 @@ export function SessionIdentity({ session }: { session: Session }) {
           className="rounded px-2 py-1 text-xs"
           style={{ border: "1px solid var(--color-border)", color: "var(--color-fg)" }}
           type="submit"
+          data-shauth-sign-out
         >
           Log out
         </button>
