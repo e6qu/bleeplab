@@ -37,9 +37,10 @@ type Server struct {
 	// container, which is a different network vantage point than the runner
 	// process — hence a distinct coordinate from the control-plane API URL.
 	// Set via BLEEPLAB_EXTERNAL_URL; empty falls back to the request Host.
-	externalURL string
-	shauth      shauthConfig
-	shauthState *shauthStateStore
+	externalURL     string
+	releaseRevision string
+	shauth          shauthConfig
+	shauthState     *shauthStateStore
 	// runnerRegistrationToken is the instance registration token accepted by
 	// GitLab's legacy POST /api/v4/runners machine flow. The modern
 	// POST /api/v4/user/runners control-plane flow is authenticated by Shauth.
@@ -69,11 +70,16 @@ type Server struct {
 
 // NewServer constructs an empty bleeplab control plane listening on addr.
 func NewServer(addr string, logger zerolog.Logger) *Server {
+	releaseRevision, err := resolveApplicationReleaseRevision()
+	if err != nil {
+		panic(err)
+	}
 	s := &Server{
 		addr:                    addr,
 		logger:                  logger,
 		mux:                     http.NewServeMux(),
 		externalURL:             os.Getenv("BLEEPLAB_EXTERNAL_URL"),
+		releaseRevision:         releaseRevision,
 		shauth:                  shauthConfigFromEnv(),
 		runnerRegistrationToken: os.Getenv("BLEEPLAB_RUNNER_REGISTRATION_TOKEN"),
 		started:                 time.Now(),
@@ -112,6 +118,8 @@ func (s *Server) ListenAndServe() error {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /auth/shauth", s.handleSHAUTHLogin)
 	s.mux.HandleFunc("GET /auth/shauth/callback", s.handleSHAUTHCallback)
+	s.mux.HandleFunc("GET /auth/shauth/logout/complete", s.handleSHAUTHLogoutBridge)
+	s.mux.HandleFunc("GET /auth/validation", s.handleSHAUTHValidation)
 	s.mux.HandleFunc("GET /auth/signed-out", s.handleSHAUTHSignedOut)
 	s.mux.HandleFunc("GET /auth/signed-out.css", handleSHAUTHSignedOutStyles)
 	s.mux.HandleFunc("POST /auth/logout", s.handleSHAUTHLogout)

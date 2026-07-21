@@ -581,7 +581,8 @@ echo "127.0.0.1 host.docker.internal" >> /etc/hosts
 # runner process uses for the control-plane API).
 export BLEEPLAB_EXTERNAL_URL="http://host.docker.internal:8929"
 log "Starting bleeplab on :8929 (git external URL $BLEEPLAB_EXTERNAL_URL)"
-bleeplab --addr :8929 --log-level info >"$LOG_DIR/bleeplab.log" 2>&1 &
+APPLICATION_RELEASE_REVISION="0123456789abcdef0123456789abcdef01234567" \
+    bleeplab --addr :8929 --log-level info >"$LOG_DIR/bleeplab.log" 2>&1 &
 PIDS+=($!)
 wait_for_url "$BL/health"
 
@@ -605,6 +606,17 @@ stage_image public.ecr.aws/docker/library/alpine:3.20 alpine:3.20
 # redis backs the `services:` job — a real CI service container the build job
 # connects to by network alias over the per-build pod network.
 stage_image public.ecr.aws/docker/library/redis:7-alpine redis:7-alpine
+
+# Prove the cloud workload network can reach the exact git_info.repo_url origin
+# before a GitLab helper spends its full source-fetch timeout discovering a
+# broken host-gateway mapping. This container goes through the same Sockerless
+# Docker API and cloud simulator as the helper and job containers below.
+log "Checking Bleeplab git origin from a real $BLEEPLAB_BACKEND workload"
+if ! timeout 240 docker --host tcp://127.0.0.1:3375 run --rm alpine:3.20 \
+    sh -eu -c "test \"\$(wget -qO- \"\$1\")\" = ok" sh "$BLEEPLAB_EXTERNAL_URL/health"; then
+    fail "$BLEEPLAB_BACKEND workload could not read Bleeplab health"
+fi
+log "Bleeplab git origin is reachable from the $BLEEPLAB_BACKEND workload"
 
 # ── Create the project, CI config, runner, and pipeline ────────────────
 log "Creating project + .gitlab-ci.yml + runner + pipeline"

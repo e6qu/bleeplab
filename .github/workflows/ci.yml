@@ -9,15 +9,18 @@ permissions:
 jobs:
   server:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.0
       - uses: actions/setup-go@v6.5.0
         with:
           go-version-file: go.mod
+      - run: make check-workflow-timeouts
       - run: go test -tags noui -count=1 -timeout 8m ./...
 
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.0
       - uses: oven-sh/setup-bun@v2.2.0
@@ -32,13 +35,13 @@ jobs:
 
   shauth-sso:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.0
       - uses: actions/checkout@v7.0.0
         with:
           repository: e6qu/shauth
-          ref: 3061b265a79926596fe2a6db086933031ed32140
+          ref: 74735a1710fa69d472e7eb27ae95ce317c7c1a3d
           path: shauth
       - uses: actions/setup-go@v6.5.0
         with:
@@ -52,7 +55,7 @@ jobs:
 
   runner-sockerless:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7.0.0
       - uses: actions/checkout@v7.0.0

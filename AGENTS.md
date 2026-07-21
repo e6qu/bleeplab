@@ -25,6 +25,10 @@ Create at most one open pull request. Rebase its branch on `origin/main` before
 pushing. Never merge pull requests; the user handles all merges. Never bypass a
 commit or push hook.
 
+Every GitHub Actions job must declare a literal `timeout-minutes` value from 1
+through 15. `make check-workflow-timeouts` enforces the policy across every
+workflow and rejects workflow files in which no jobs were recognized.
+
 ## Remote state is authoritative
 
 Before editing, fetch the current `origin/main` and the remote head of the open

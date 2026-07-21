@@ -34,7 +34,8 @@ The GitLab-compatible runner, job, artifact, and Git smart-HTTP transports use
 their native registration, runner, and job tokens. The human project,
 pipeline, and runner-management API, dashboard, and `/internal/` operator
 projections use Shauth OpenID Connect when Shauth is configured. Configure all
-five identity coordinates together:
+five identity coordinates together. Every process also requires an immutable
+deployment revision:
 
 ```text
 BLEEPLAB_SHAUTH_ISSUER=https://auth.dev.e6qu.dev
@@ -42,6 +43,7 @@ BLEEPLAB_SHAUTH_CLIENT_ID=...
 BLEEPLAB_SHAUTH_CLIENT_SECRET=...
 BLEEPLAB_PUBLIC_URL=https://bleeplab.dev.e6qu.dev
 BLEEPLAB_SHAUTH_STATE_DIR=/var/lib/bleeplab/shauth
+APPLICATION_RELEASE_REVISION=0123456789abcdef0123456789abcdef01234567
 ```
 
 The optional legacy `POST /api/v4/runners` registration flow is enabled only
@@ -53,11 +55,14 @@ Register these exact Shauth client coordinates:
 
 ```text
 redirect_uri:                    https://bleeplab.dev.e6qu.dev/auth/shauth/callback
-post_logout_redirect_uri:        https://bleeplab.dev.e6qu.dev/auth/signed-out
+post_logout_redirect_uri:        https://bleeplab.dev.e6qu.dev/auth/shauth/logout/complete
 frontchannel_logout_uri:         https://bleeplab.dev.e6qu.dev/auth/shauth/frontchannel-logout
 backchannel_logout_uri:          https://bleeplab.dev.e6qu.dev/auth/shauth/backchannel-logout
 frontchannel_logout_session_required: true
 backchannel_logout_session_required: true
+validation_url:                 https://bleeplab.dev.e6qu.dev/auth/validation
+signed_out_url:                 https://bleeplab.dev.e6qu.dev/auth/signed-out
+release_revision:               <same immutable APPLICATION_RELEASE_REVISION>
 ```
 
 Bleeplab treats `BLEEPLAB_SHAUTH_ISSUER` as an exact OpenID Connect issuer
@@ -77,9 +82,13 @@ configured without it. Session reads and signed logout-token replay
 claims are shared across replicas and survive process replacement. The dashboard
 displays the user's name, email, avatar, and logout control. Logout uses the
 provider's discovered RP-Initiated Logout endpoint with an ID-token hint and the
-same-origin `/auth/signed-out` landing page. Local session state is revoked
-before any provider discovery or logout network work, so an unavailable
-provider cannot leave Bleeplab authenticated. OpenID Connect Front-Channel
+exact same-origin `/auth/shauth/logout/complete` protocol bridge. The bridge
+ignores every query parameter, emits no-store and no-referrer protections, and
+redirects only to Shauth's issuer-derived fixed `/oauth/logout/complete`
+endpoint. Shauth then completes its one-time server-side logout correlation and
+returns the browser to Bleeplab's distinct `/auth/signed-out` page. Local
+session state is revoked before any provider discovery or logout network work,
+so an unavailable provider cannot leave Bleeplab authenticated. OpenID Connect Front-Channel
 Logout revokes the exact issuer and `sid`, and signed Back-Channel Logout
 atomically revokes matching local sessions by `sid` (or all sessions for `sub`
 when no `sid` is supplied). The signed-out page clears local identity state,
@@ -88,9 +97,25 @@ chooses its exact `Sign in with Shauth` control. That control enters the
 same-origin `/auth/shauth` starter and returns to `/ui/`. The accessible,
 responsive page uses saturated light and dark palettes, keyboard focus cues,
 and reduced-motion preferences without loading a runtime dependency. The
-post-logout URI is derived from `BLEEPLAB_PUBLIC_URL`, so it cannot drift to
-another client origin. An omitted configuration preserves the repository-local
-standalone mode; a partial or non-HTTPS configuration fails startup.
+post-logout bridge URI is derived from `BLEEPLAB_PUBLIC_URL`, so it cannot drift
+to another client origin, and the bridge never accepts a caller-selected target.
+`GET /auth/validation` is the deployment-neutral,
+application-owned acceptance surface. Anonymous callers receive an exact `303`
+to the persistent app-local signed-out page. A real Bleeplab session exposes
+the verified username, email, normalized `developer` or `admin` role, ordinary
+global sign-out control, and immutable deployed release through the stable
+`validation-username`, `validation-email`, `validation-role`, and
+`validation-release` markers. Authorization headers, API keys, query values,
+and Shauth validator credentials are not authentication mechanisms for that
+route. An omitted Shauth configuration preserves standalone mode; a partial or
+non-HTTPS Shauth configuration fails startup.
+
+`APPLICATION_RELEASE_REVISION` is mandatory and accepts a 12–64 character
+lowercase hexadecimal source revision or `sha256:` plus a 64-character
+lowercase hexadecimal digest. Release containers bake the full source revision
+into the binary; deployment configuration may replace it with the exact image
+manifest digest. Startup fails when neither coordinate identifies an immutable
+artifact.
 
 `BLEEPLAB_ALLOW_INSECURE_OIDC=true` permits HTTP only for loopback hostnames.
 It exists solely for repository-local integration tests; non-loopback issuer
@@ -135,6 +160,7 @@ Bleeplab stores git repositories and CI artifacts in an **object store first**, 
 | `BLEEPLAB_GIT_DIR` | Filesystem directory for git repos when not using S3. | — (in-memory) |
 | `BLEEPLAB_ARTIFACTS_DIR` | Filesystem directory for artifacts when not using S3. | — (in-memory) |
 | `BLEEPLAB_BACKEND` | Selects the backend + cloud sim in the integration harness (`ecs` → AWS sim, `cloudrun` → GCP sim, …). | — |
+| `APPLICATION_RELEASE_REVISION` | Immutable source revision or image digest exposed by app-owned post-deploy validation. Release images bake the source revision as their default. | required |
 
 ## Quick start
 
@@ -143,17 +169,24 @@ Bleeplab has a repository-local Makefile for builds, tests, and the real Sockerl
 ```bash
 # Build the server with its embedded dashboard.
 make build                   # → ./bleeplab-server
-./bleeplab-server -addr :8929 -log-level debug
+APPLICATION_RELEASE_REVISION=0123456789ab ./bleeplab-server -addr :8929 -log-level debug
 ```
 
-Nothing is required in the environment for the in-memory standalone default —
-the control-plane API can create a runner authentication token and run jobs
-immediately. Point `BLEEPLAB_S3_*` or `BLEEPLAB_GIT_DIR` at durable storage to
-keep repos and artifacts across restarts.
+Apart from the required immutable release coordinate, nothing is required in
+the environment for the in-memory standalone default — the control-plane API
+can create a runner authentication token and run jobs immediately. Point
+`BLEEPLAB_S3_*` or `BLEEPLAB_GIT_DIR` at durable storage to keep repos and
+artifacts across restarts.
 
 ## Container images
 
 Every merge to `main` publishes immutable twelve-character commit-SHA tags to GitHub Container Registry. Each generic tag is a multi-architecture manifest; its direct native manifests are suffixed with `-amd64` and `-arm64`. Select the generic manifest for an architecture-aware orchestrator such as Kubernetes, or select a suffixed manifest when a service requires an explicit platform image.
+
+The server image build requires
+`--build-arg APPLICATION_RELEASE_REVISION=<immutable-revision>` and bakes that
+coordinate into the binary. The publication workflow supplies the full source
+commit; arbitrary local builds must provide their own exact immutable
+coordinate.
 
 | Image | Multi-architecture manifest | Direct native manifests |
 |---|---|---|
@@ -202,13 +235,20 @@ SOCKERLESS_ROOT=/path/to/sockerless make runner-sockerless-test
 The harness ([`test/runner/sockerless/run-integration.sh`](test/runner/sockerless/run-integration.sh)) exercises the whole runner-as-cloud-task data plane end to end: clone + compile, artifacts across stages, and `services:` sidecars over the network pod. Set `BLEEPLAB_HOLD=1` to hold the stack (Bleeplab `:8929`, backend `:3375`) for inspection on failure. It uses `docker buildx build --load` because the runner image must be available to the local Docker API.
 
 The Shauth acceptance harness is owned by this repository and pins the reviewed
-Shauth commit. It proves direct entry, catalog launch, verified email and role
-claims, single-login SSO across two relying parties, strict Front-Channel
-Logout, signed Back-Channel Logout, RP-Initiated Logout returning to Bleeplab,
-persistent app-local signed-out reload, explicit recovery through the
-same-origin starter, and fail-closed access after the shared session ends. It
-reuses the test-only Playwright installation locked by that Shauth checkout;
-Bleeplab has no oauth2-proxy or other authentication proxy dependency.
+Shauth commit. It runs the same deployment-neutral browser contract used after
+deployment, once from Bleeplab's public origin and once from Shauth's application
+catalog. Each lifecycle receives exactly two short-lived, single-use,
+passwordless Shauth browser bootstraps. It proves exact verified identity and
+release markers, single-login SSO across two relying parties, app-initiated
+global logout returning to Bleeplab, provider-initiated global logout,
+Front-Channel and signed Back-Channel Logout, persistent app-local signed-out
+reload, explicit recovery through the same-origin starter, and fail-closed
+access after the shared session ends. The reusable Shauth validator token is
+accepted only by Shauth and is never inherited by either Bleeplab process or
+the browser process. The browser additionally proves that credential-shaped
+headers, query values, cookies, and form fields cannot authenticate Bleeplab.
+The harness reuses the test-only Playwright installation locked by that Shauth
+checkout; Bleeplab has no oauth2-proxy or other authentication proxy dependency.
 
 ## Source layout
 

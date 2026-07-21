@@ -5,10 +5,14 @@ set -euo pipefail
 : "${SHAUTH_SOURCE_DIR:?SHAUTH_SOURCE_DIR must point to the pinned Shauth checkout}"
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
-expected_shauth_commit="3061b265a79926596fe2a6db086933031ed32140"
+expected_shauth_commit="74735a1710fa69d472e7eb27ae95ce317c7c1a3d"
 actual_shauth_commit="$(git -C "$SHAUTH_SOURCE_DIR" rev-parse HEAD)"
 if [[ "$actual_shauth_commit" != "$expected_shauth_commit" ]]; then
   printf 'Shauth checkout is %s; expected reviewed commit %s\n' "$actual_shauth_commit" "$expected_shauth_commit" >&2
+  exit 1
+fi
+if [[ -n "$(git -C "$SHAUTH_SOURCE_DIR" status --porcelain)" ]]; then
+  printf 'Shauth checkout must be clean at reviewed commit %s\n' "$expected_shauth_commit" >&2
   exit 1
 fi
 
@@ -59,22 +63,28 @@ export POSTGRES_PASSWORD
 HYDRA_SYSTEM_SECRET="$(random_secret)"
 export HYDRA_SYSTEM_SECRET
 export HYDRA_DSN="postgres://shauth:${POSTGRES_PASSWORD}@postgres:5432/hydra?sslmode=disable"
-export HYDRA_PUBLIC_URL="http://localhost:49444"
+export HYDRA_PUBLIC_URL="http://localhost:48080"
 export SHAUTH_PUBLIC_URL="http://localhost:48080"
 export SHAUTH_DATABASE_URL="postgres://shauth:${POSTGRES_PASSWORD}@postgres:5432/shauth?sslmode=disable"
-export GITHUB_CLIENT_ID="local-password-integration"
-export GITHUB_CLIENT_SECRET="local-password-integration"
+export GITHUB_CLIENT_ID="local-integration-client"
+export GITHUB_CLIENT_SECRET="local-integration-secret"
 SHAUTH_BOOTSTRAP_ADMIN_PASSWORD="$(random_secret)"
 export SHAUTH_BOOTSTRAP_ADMIN_PASSWORD
-SHAUTH_DEVELOPER_PASSWORD="$(random_secret)"
-export SHAUTH_DEVELOPER_PASSWORD
+SHAUTH_VALIDATOR_TOKEN="$(random_secret)"
+export SHAUTH_VALIDATOR_TOKEN
+SHAUTH_VALIDATION_STATUS_TOKEN="$(random_secret)"
+export SHAUTH_VALIDATION_STATUS_TOKEN
+export SHAUTH_VALIDATION_USERNAME="shauth-validator"
+export SHAUTH_VALIDATION_EMAIL="shauth-validator@localhost.test"
+export APPLICATION_RELEASE_REVISION="0123456789abcdef0123456789abcdef01234567"
 primary_secret="$(random_secret)"
 secondary_secret="$(random_secret)"
 export SHAUTH_BOOTSTRAP_APPS_JSON
-SHAUTH_BOOTSTRAP_APPS_JSON="$(printf '[{"slug":"bleeplab-primary","name":"Bleeplab primary","description":"Primary Bleeplab SSO acceptance application.","launch_url":"http://127.0.0.1:18929/ui/","oidc_client_id":"bleeplab-primary","oidc_client_secret":"%s","redirect_uris":["http://127.0.0.1:18929/auth/shauth/callback"],"post_logout_redirect_uris":["http://127.0.0.1:18929/auth/signed-out"],"frontchannel_logout_uri":"http://127.0.0.1:18929/auth/shauth/frontchannel-logout","backchannel_logout_uri":"http://127.0.0.1:18929/auth/shauth/backchannel-logout","health_url":"http://127.0.0.1:18929/health","monitoring_url":""},{"slug":"bleeplab-secondary","name":"Bleeplab secondary","description":"Secondary Bleeplab SSO acceptance application.","launch_url":"http://localhost:18930/ui/","oidc_client_id":"bleeplab-secondary","oidc_client_secret":"%s","redirect_uris":["http://localhost:18930/auth/shauth/callback"],"post_logout_redirect_uris":["http://localhost:18930/auth/signed-out"],"frontchannel_logout_uri":"http://localhost:18930/auth/shauth/frontchannel-logout","backchannel_logout_uri":"http://localhost:18930/auth/shauth/backchannel-logout","health_url":"http://localhost:18930/health","monitoring_url":""}]' "$primary_secret" "$secondary_secret")"
+SHAUTH_BOOTSTRAP_APPS_JSON="$(printf '[{"slug":"bleeplab-primary","name":"Bleeplab primary","description":"Primary Bleeplab SSO acceptance application.","launch_url":"http://127.0.0.1:18929/ui/","oidc_client_id":"bleeplab-primary","oidc_client_secret":"%s","redirect_uris":["http://127.0.0.1:18929/auth/shauth/callback"],"post_logout_redirect_uris":["http://127.0.0.1:18929/auth/shauth/logout/complete"],"frontchannel_logout_uri":"http://127.0.0.1:18929/auth/shauth/frontchannel-logout","backchannel_logout_uri":"http://127.0.0.1:18929/auth/shauth/backchannel-logout","health_url":"http://127.0.0.1:18929/health","monitoring_url":"","validation_url":"http://127.0.0.1:18929/auth/validation","signed_out_url":"http://127.0.0.1:18929/auth/signed-out","release_revision":"%s"},{"slug":"bleeplab-secondary","name":"Bleeplab secondary","description":"Secondary Bleeplab SSO acceptance application.","launch_url":"http://localhost:18930/ui/","oidc_client_id":"bleeplab-secondary","oidc_client_secret":"%s","redirect_uris":["http://localhost:18930/auth/shauth/callback"],"post_logout_redirect_uris":["http://localhost:18930/auth/shauth/logout/complete"],"frontchannel_logout_uri":"http://localhost:18930/auth/shauth/frontchannel-logout","backchannel_logout_uri":"http://localhost:18930/auth/shauth/backchannel-logout","health_url":"http://localhost:18930/health","monitoring_url":"","validation_url":"http://localhost:18930/auth/validation","signed_out_url":"http://localhost:18930/auth/signed-out","release_revision":"%s"}]' "$primary_secret" "$APPLICATION_RELEASE_REVISION" "$secondary_secret" "$APPLICATION_RELEASE_REVISION")"
 
 "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true
-"${compose[@]}" up --build --detach
+docker build --load --tag shauth-local "$SHAUTH_SOURCE_DIR"
+"${compose[@]}" up --no-build --detach
 
 for ((attempt = 0; attempt < 180; attempt++)); do
   if curl --fail --silent http://localhost:48080/healthz >/dev/null 2>&1 && curl --fail --silent http://localhost:49444/health/ready >/dev/null 2>&1; then
@@ -92,9 +102,10 @@ start_bleeplab() {
   client_secret="$4"
   state_dir="$5"
   mkdir -p "$state_dir"
-  env \
+  env -i \
+    APPLICATION_RELEASE_REVISION="$APPLICATION_RELEASE_REVISION" \
     BLEEPLAB_ALLOW_INSECURE_OIDC=true \
-    BLEEPLAB_SHAUTH_ISSUER=http://localhost:49444 \
+    BLEEPLAB_SHAUTH_ISSUER=http://localhost:48080 \
     BLEEPLAB_SHAUTH_CLIENT_ID="$client_id" \
     BLEEPLAB_SHAUTH_CLIENT_SECRET="$client_secret" \
     BLEEPLAB_PUBLIC_URL="http://${host}:${port}" \
@@ -121,4 +132,20 @@ for endpoint in http://127.0.0.1:18929/health http://localhost:18930/health; do
   curl --fail --silent --show-error "$endpoint" >/dev/null
 done
 
-SHAUTH_SOURCE_DIR="$SHAUTH_SOURCE_DIR" node "$root/test/shauth-sso.mjs"
+for pid in "$primary_pid" "$secondary_pid"; do
+  if ps eww -p "$pid" -o command= | grep -Eq 'SHAUTH_(VALIDATOR_TOKEN|VALIDATION_STATUS_TOKEN|BOOTSTRAP_ADMIN_PASSWORD)='; then
+    printf 'Bleeplab process %s inherited a Shauth-only credential\n' "$pid" >&2
+    exit 1
+  fi
+done
+
+env -i \
+  PATH="$PATH" \
+  HOME="${HOME:-$temporary}" \
+  SHAUTH_SOURCE_DIR="$SHAUTH_SOURCE_DIR" \
+  SHAUTH_URL="http://localhost:48080" \
+  SHAUTH_VALIDATOR_TOKEN="$SHAUTH_VALIDATOR_TOKEN" \
+  SHAUTH_VALIDATION_USERNAME="$SHAUTH_VALIDATION_USERNAME" \
+  SHAUTH_VALIDATION_EMAIL="$SHAUTH_VALIDATION_EMAIL" \
+  APPLICATION_RELEASE_REVISION="$APPLICATION_RELEASE_REVISION" \
+  node "$root/test/run-shauth-validation.mjs"
