@@ -24,6 +24,20 @@ describe("SessionIdentity", () => {
     expect(container.querySelector('form[action="/auth/logout"][method="post"]')).not.toBeNull();
   });
 
+  // Post-deployment qualification finds the signed-in user and the real
+  // sign-out control through these markers, and the username must be exactly
+  // what the provider asserted.
+  it("marks the signed-in user and the real sign-out control for qualification", () => {
+    const { container } = render(
+      <SessionIdentity session={{ authenticated: true, name: "octocat", role: "developer" }} />,
+    );
+
+    expect(container.querySelector("[data-shauth-user]")?.getAttribute("data-shauth-user")).toBe(
+      "octocat",
+    );
+    expect(container.querySelector("[data-shauth-sign-out]")?.tagName).toBe("BUTTON");
+  });
+
   it("uses an initial when the identity has no avatar", () => {
     render(<SessionIdentity session={{ authenticated: true, name: "Developer", role: "developer" }} />);
     expect(screen.getByText("D")).toBeDefined();
