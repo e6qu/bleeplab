@@ -58,6 +58,131 @@ wait_for_url() {
     fail "Timeout waiting for $url"
 }
 
+# ── Simulator data-plane authentication helpers ────────────────────────
+# The sockerless simulators now verify credentials on their cloud data planes,
+# exactly as the real clouds do. These helpers authenticate the harness's
+# provisioning calls the way a real client would; they differ from a real-cloud
+# call ONLY in coordinates (the endpoint base URL and the seeded bootstrap
+# credential the simulator provisions).
+
+# hex_sha256 emits the lowercase hex SHA-256 of its stdin.
+hex_sha256() { openssl dgst -sha256 -hex | sed 's/^.*= //'; }
+
+# hmac_hex computes HMAC-SHA256(hexkey, data) and emits lowercase hex.
+hmac_hex() {
+    local hexkey="$1"
+    printf '%s' "$2" | openssl dgst -sha256 -mac HMAC -macopt "hexkey:${hexkey}" | sed 's/^.*= //'
+}
+
+# aws_sigv4_post signs an AWS control-plane request (awsJson) with SigV4 the way
+# a real AWS SDK / CLI client does and POSTs it. The AWS simulator recomputes and
+# verifies this signature at its POST / control-plane chokepoint and rejects an
+# unsigned request with 403. It differs from a real-cloud call ONLY in
+# coordinates: the endpoint base URL (the simulator) and the seeded bootstrap
+# administrator credential the simulator provisions (access key "test", secret
+# "test", region us-east-1) — the same static credential the AWS backends use.
+#   $1 base URL (e.g. http://127.0.0.1:4566)
+#   $2 X-Amz-Target header value
+#   $3 request body
+#   $4 signing service (e.g. ecs)
+aws_sigv4_post() {
+    local base="$1" target="$2" body="$3" service="$4"
+    local access_key="test" secret="test" region="us-east-1"
+    local content_type="application/x-amz-json-1.1"
+
+    local host="${base#http://}"
+    host="${host#https://}"
+    host="${host%%/*}"
+
+    local amzdate datestamp payload_hash
+    amzdate="$(date -u +%Y%m%dT%H%M%SZ)"
+    datestamp="$(date -u +%Y%m%d)"
+    payload_hash="$(printf '%s' "$body" | hex_sha256)"
+
+    local signed_headers="content-type;host;x-amz-content-sha256;x-amz-date;x-amz-target"
+    local canonical_headers="content-type:${content_type}
+host:${host}
+x-amz-content-sha256:${payload_hash}
+x-amz-date:${amzdate}
+x-amz-target:${target}
+"
+    local canonical_request="POST
+/
+
+${canonical_headers}
+${signed_headers}
+${payload_hash}"
+
+    local scope="${datestamp}/${region}/${service}/aws4_request"
+    local string_to_sign
+    string_to_sign="AWS4-HMAC-SHA256
+${amzdate}
+${scope}
+$(printf '%s' "$canonical_request" | hex_sha256)"
+
+    local ksecret_hex
+    ksecret_hex="$(printf 'AWS4%s' "$secret" | od -An -v -tx1 | tr -d ' \n')"
+    local kdate kregion kservice ksigning signature
+    kdate="$(hmac_hex "$ksecret_hex" "$datestamp")"
+    kregion="$(hmac_hex "$kdate" "$region")"
+    kservice="$(hmac_hex "$kregion" "$service")"
+    ksigning="$(hmac_hex "$kservice" "aws4_request")"
+    signature="$(hmac_hex "$ksigning" "$string_to_sign")"
+
+    curl -sf -X POST \
+        -H "Content-Type: ${content_type}" \
+        -H "X-Amz-Target: ${target}" \
+        -H "X-Amz-Date: ${amzdate}" \
+        -H "X-Amz-Content-Sha256: ${payload_hash}" \
+        -H "Authorization: AWS4-HMAC-SHA256 Credential=${access_key}/${scope}, SignedHeaders=${signed_headers}, Signature=${signature}" \
+        -d "$body" \
+        "${base}/" >/dev/null
+}
+
+# azure_arm_bearer acquires an Azure Resource Manager bearer token from the
+# simulator the exact way an App Service managed-identity client does in
+# production: a request against the identity endpoint (here the sim's exempt
+# /msi/token) for the ARM resource. The simulator mints a real, RS256-signed
+# token whose `aud` is the management audience — the same token
+# DefaultAzureCredential obtains inside the backend. Emits the raw access token
+# on stdout.
+#   $1 simulator base URL (e.g. http://127.0.0.1:4568)
+azure_arm_bearer() {
+    local base="$1"
+    curl -sf \
+        -H "X-IDENTITY-HEADER: sim-identity-header" \
+        "${base}/msi/token?resource=https://management.azure.com/" \
+        | jq -r '.access_token'
+}
+
+# azure_arm_put issues an authenticated Azure Resource Manager PUT. The
+# simulator's ARM plane rejects an unauthenticated PUT with 401, exactly as real
+# ARM does; ARM_BEARER (set by the caller via azure_arm_bearer) carries the
+# managed-identity token ARM requires.
+#   $1 request URL   $2 JSON body
+azure_arm_put() {
+    local url="$1" body="$2"
+    curl -sf -X PUT \
+        -H "Authorization: Bearer ${ARM_BEARER}" \
+        -H 'Content-Type: application/json' \
+        -d "$body" \
+        "$url" >/dev/null
+}
+
+# gcp_metadata_token fetches an OAuth2 access token from the simulator's GCE
+# metadata server (the same coordinate a workload uses on real GCE). The
+# simulator verifies bearer tokens on its Cloud Storage data plane and rejects an
+# unauthenticated request with 401; this mints a token it will accept. Emits the
+# raw access token on stdout.
+#   $1 simulator base URL (e.g. http://127.0.0.1:4567)
+gcp_metadata_token() {
+    local base="$1"
+    curl -sf \
+        -H "Metadata-Flavor: Google" \
+        "${base}/computeMetadata/v1/instance/service-accounts/default/token" \
+        | jq -r '.access_token'
+}
+
 # bleeplab control-plane API helper.
 BL=http://127.0.0.1:8929
 bl() { # METHOD PATH [JSON]
@@ -68,7 +193,9 @@ bl() { # METHOD PATH [JSON]
 provision_ecs() {
     SIM_EFS_DATA_DIR="$SOCKERLESS_HARNESS_DATA_DIR"
     export SIM_EFS_DATA_DIR
-    export AWS_ACCESS_KEY_ID=sim AWS_SECRET_ACCESS_KEY=sim AWS_REGION=us-east-1
+    # The ECS backend and the SigV4 signer below both authenticate with the
+    # simulator's seeded bootstrap credential (access key/secret "test"/"test").
+    export AWS_ACCESS_KEY_ID=test AWS_SECRET_ACCESS_KEY=test AWS_REGION=us-east-1
     SIM_ADDR="127.0.0.1:4566"
     LOG_DIR="$SIM_EFS_DATA_DIR/logs"
     mkdir -p "$LOG_DIR"
@@ -79,9 +206,14 @@ provision_ecs() {
     wait_for_url "http://$SIM_ADDR/health"
 
     log "Bootstrapping sim: ECS cluster + EFS workspace"
-    curl -sf -X POST "http://$SIM_ADDR/" -H "Content-Type: application/x-amz-json-1.1" \
-        -H "X-Amz-Target: AmazonEC2ContainerServiceV20141113.CreateCluster" \
-        -d '{"clusterName":"sim-cluster"}' >/dev/null || fail "create ECS cluster"
+    # The ECS control plane (awsJson POST /) is SigV4-gated; sign it exactly as
+    # the AWS SDK does. The EFS calls below hit a separate non-gated REST service
+    # (/2015-02-01/*), so they stay unsigned, matching how a real client reaches
+    # Amazon EFS's own endpoint.
+    aws_sigv4_post "http://$SIM_ADDR" \
+        "AmazonEC2ContainerServiceV20141113.CreateCluster" \
+        '{"clusterName":"sim-cluster"}' \
+        "ecs" || fail "create ECS cluster"
 
     FS_ID=$(curl -sf -X POST "http://$SIM_ADDR/2015-02-01/file-systems" -H 'Content-Type: application/json' \
         -d '{"CreationToken":"bleeplab-runner"}' | jq -r '.FileSystemId // empty')
@@ -180,9 +312,16 @@ provision_cloudrun() {
     wait_for_url "http://$SIM_ADDR/health"
 
     log "Bootstrapping sim: GCS buckets (build + workspace)"
+    # The Cloud Storage data plane now verifies bearer tokens exactly as real
+    # Google APIs do; mint one from the sim's GCE metadata server and present it
+    # on the bucket-create calls.
+    local gcs_token
+    gcs_token="$(gcp_metadata_token "http://$SIM_ADDR")"
+    [ -n "$gcs_token" ] || fail "acquire GCS bearer from $SIM_ADDR metadata server"
     local b
     for b in "$build_bucket" "$ws_bucket"; do
         curl -sf -X POST "http://$SIM_ADDR/storage/v1/b?project=$project" \
+            -H "Authorization: Bearer $gcs_token" \
             -H 'Content-Type: application/json' -d "{\"name\":\"$b\"}" >/dev/null \
             || fail "create GCS bucket $b"
     done
@@ -314,9 +453,16 @@ provision_gcf() {
     wait_for_url "http://$SIM_ADDR/health"
 
     log "Bootstrapping sim: GCS buckets (build + workspace)"
+    # The Cloud Storage data plane now verifies bearer tokens exactly as real
+    # Google APIs do; mint one from the sim's GCE metadata server and present it
+    # on the bucket-create calls.
+    local gcs_token
+    gcs_token="$(gcp_metadata_token "http://$SIM_ADDR")"
+    [ -n "$gcs_token" ] || fail "acquire GCS bearer from $SIM_ADDR metadata server"
     local b
     for b in "$build_bucket" "$ws_bucket"; do
         curl -sf -X POST "http://$SIM_ADDR/storage/v1/b?project=$project" \
+            -H "Authorization: Bearer $gcs_token" \
             -H 'Content-Type: application/json' -d "{\"name\":\"$b\"}" >/dev/null \
             || fail "create GCS bucket $b"
     done
@@ -442,15 +588,22 @@ provision_aca() {
     wait_for_url "http://$SIM_ADDR/health"
 
     log "Bootstrapping sim: storage account + managed environment + ACR"
-    curl -sf -X PUT "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Storage/storageAccounts/$acct?api-version=2023-01-01" \
-        -H 'Content-Type: application/json' \
-        -d '{"location":"eastus","sku":{"name":"Standard_LRS"},"kind":"StorageV2","properties":{}}' >/dev/null || fail "create storage account"
-    curl -sf -X PUT "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.App/managedEnvironments/$env?api-version=2024-03-01" \
-        -H 'Content-Type: application/json' \
-        -d '{"location":"eastus","properties":{}}' >/dev/null || fail "create managed environment"
-    curl -sf -X PUT "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.ContainerRegistry/registries/$acr?api-version=2023-07-01" \
-        -H 'Content-Type: application/json' \
-        -d '{"location":"eastus","sku":{"name":"Basic"},"properties":{}}' >/dev/null || fail "create ACR registry"
+    # The Azure Resource Manager plane (/subscriptions/, /providers/) is now
+    # bearer-gated exactly as real ARM is; acquire a managed-identity token and
+    # attach it to every ARM PUT. The build-context PUT below is an Azure Blob
+    # data-plane call (subdomain-routed, its own SAS/shared-key scheme), not an
+    # ARM path, so it stays unauthenticated here.
+    ARM_BEARER="$(azure_arm_bearer "http://$SIM_ADDR")"
+    [ -n "$ARM_BEARER" ] || fail "acquire ARM bearer from $SIM_ADDR/msi/token"
+    azure_arm_put \
+        "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Storage/storageAccounts/$acct?api-version=2023-01-01" \
+        '{"location":"eastus","sku":{"name":"Standard_LRS"},"kind":"StorageV2","properties":{}}' || fail "create storage account"
+    azure_arm_put \
+        "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.App/managedEnvironments/$env?api-version=2024-03-01" \
+        '{"location":"eastus","properties":{}}' || fail "create managed environment"
+    azure_arm_put \
+        "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.ContainerRegistry/registries/$acr?api-version=2023-07-01" \
+        '{"location":"eastus","sku":{"name":"Basic"},"properties":{}}' || fail "create ACR registry"
     curl -sf -X PUT "http://$SIM_ADDR/build-context?restype=container" \
         -H "Host: ${acct}.blob.localhost:4568" >/dev/null || fail "create build-context container"
 
@@ -458,6 +611,12 @@ provision_aca() {
     mkdir -p "$WORK_DIR"
 
     export SOCKERLESS_ENDPOINT_URL="$sim_endpoint"
+    # The Azure backend federates via azidentity.DefaultAzureCredential's App
+    # Service managed-identity source; these platform coordinates point it at the
+    # simulator's exempt /msi/token minter so it can authenticate to the now
+    # bearer-gated ARM plane, exactly as against real Azure.
+    export IDENTITY_ENDPOINT="http://$SIM_ADDR/msi/token"
+    export IDENTITY_HEADER="sim-identity-header"
     export SOCKERLESS_ACA_SUBSCRIPTION_ID="$sub"
     export SOCKERLESS_ACA_RESOURCE_GROUP="$rg"
     export SOCKERLESS_ACA_STORAGE_ACCOUNT="$acct"
@@ -522,15 +681,22 @@ provision_azf() {
     wait_for_url "http://$SIM_ADDR/health"
 
     log "Bootstrapping sim: storage account + App Service plan + ACR"
-    curl -sf -X PUT "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Storage/storageAccounts/$acct?api-version=2023-01-01" \
-        -H 'Content-Type: application/json' \
-        -d '{"location":"eastus","sku":{"name":"Standard_LRS"},"kind":"StorageV2","properties":{}}' >/dev/null || fail "create storage account"
-    curl -sf -X PUT "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Web/serverfarms/$plan?api-version=2023-12-01" \
-        -H 'Content-Type: application/json' \
-        -d '{"location":"eastus","sku":{"name":"EP1","tier":"ElasticPremium"},"kind":"linux","properties":{"reserved":true}}' >/dev/null || fail "create App Service plan"
-    curl -sf -X PUT "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.ContainerRegistry/registries/$acr?api-version=2023-07-01" \
-        -H 'Content-Type: application/json' \
-        -d '{"location":"eastus","sku":{"name":"Basic"},"properties":{}}' >/dev/null || fail "create ACR registry"
+    # The Azure Resource Manager plane (/subscriptions/, /providers/) is now
+    # bearer-gated exactly as real ARM is; acquire a managed-identity token and
+    # attach it to every ARM PUT. The build-context PUT below is an Azure Blob
+    # data-plane call (subdomain-routed, its own SAS/shared-key scheme), not an
+    # ARM path, so it stays unauthenticated here.
+    ARM_BEARER="$(azure_arm_bearer "http://$SIM_ADDR")"
+    [ -n "$ARM_BEARER" ] || fail "acquire ARM bearer from $SIM_ADDR/msi/token"
+    azure_arm_put \
+        "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Storage/storageAccounts/$acct?api-version=2023-01-01" \
+        '{"location":"eastus","sku":{"name":"Standard_LRS"},"kind":"StorageV2","properties":{}}' || fail "create storage account"
+    azure_arm_put \
+        "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.Web/serverfarms/$plan?api-version=2023-12-01" \
+        '{"location":"eastus","sku":{"name":"EP1","tier":"ElasticPremium"},"kind":"linux","properties":{"reserved":true}}' || fail "create App Service plan"
+    azure_arm_put \
+        "http://$SIM_ADDR/subscriptions/$sub/resourceGroups/$rg/providers/Microsoft.ContainerRegistry/registries/$acr?api-version=2023-07-01" \
+        '{"location":"eastus","sku":{"name":"Basic"},"properties":{}}' || fail "create ACR registry"
     curl -sf -X PUT "http://$SIM_ADDR/build-context?restype=container" \
         -H "Host: ${acct}.blob.localhost:4568" >/dev/null || fail "create build-context container"
 
@@ -538,6 +704,12 @@ provision_azf() {
     mkdir -p "$WORK_DIR"
 
     export SOCKERLESS_ENDPOINT_URL="$sim_endpoint"
+    # The Azure backend federates via azidentity.DefaultAzureCredential's App
+    # Service managed-identity source; these platform coordinates point it at the
+    # simulator's exempt /msi/token minter so it can authenticate to the now
+    # bearer-gated ARM plane, exactly as against real Azure.
+    export IDENTITY_ENDPOINT="http://$SIM_ADDR/msi/token"
+    export IDENTITY_HEADER="sim-identity-header"
     export SOCKERLESS_AZF_SUBSCRIPTION_ID="$sub"
     export SOCKERLESS_AZF_RESOURCE_GROUP="$rg"
     export SOCKERLESS_AZF_STORAGE_ACCOUNT="$acct"
